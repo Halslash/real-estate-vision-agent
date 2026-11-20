@@ -1,170 +1,103 @@
 # Member B integration guide — `VisionAgent`
 
-This guide is the boundary contract between Member A (CNN visual proxy) and
-Member B (structural Random Forest + final Linear Regression). Member B does
-**not** need training code, the dataset CSV, or knowledge of the CNN internals.
+Boundary contract between Member A (CNN visual proxy) and Member B (structural
+Random Forest + final Linear Regression). Member B needs no training code, CSV or
+CNN internals.
 
-> **Read this first.** `condition_score` is a **normalized market-derived visual
-> proxy**, not a measured physical-condition grade, not an aesthetic score and
-> not a price. Treating it as ground truth or as a calibrated probability of
-> "good condition" is a prohibited interpretation. See `docs/MODEL_CARD.md`.
+> **Read first.** `condition_score` is a **normalized market-derived visual
+> proxy**, not a physical-condition grade, aesthetic score, calibrated
+> probability or price. See `docs/MODEL_CARD.md`.
 
----
-
-## 1. Load the trained checkpoint
+## 1. Load and score
 
 ```python
 from src.vision_agent import VisionAgent
 
-agent = VisionAgent(
-    checkpoint_path="/kaggle/working/output/improved_mobilenet/models/best_model.pth"
-)
+agent = VisionAgent(checkpoint_path="/kaggle/working/output/improved_mobilenet/models/best_model.pth")
+result = agent.score("/path/to/exterior.jpg")
+batch = agent.score_batch(paths, batch_size=64)
 ```
 
-The constructor reads the architecture, class mapping, image preprocessing and
-all label metadata from the checkpoint. No pretrained weights are downloaded at
-inference time. CPU is used automatically when CUDA is unavailable; you can pin
-the device explicitly:
+Also supported: `agent = VisionAgent(device="cuda")` then `agent.load(path)`.
+`device` accepts `"auto"`, `"cpu"`, `"cuda"` or a `torch.device`; CPU is used
+automatically when CUDA is unavailable. The checkpoint supplies architecture,
+class mapping and preprocessing; nothing is downloaded at inference time.
 
-```python
-agent = VisionAgent(checkpoint_path="...", device="cpu")   # or "cuda" / "auto"
-result = agent.score("exterior.jpg")
-```
-
-The legacy two-step form still works for the original baseline checkpoint:
-
-```python
-agent = VisionAgent()
-agent.load("models/best_model.pth")
-```
-
----
-
-## 2. Score one exterior image
-
-```python
-result = agent.score("path/to/property_exterior.jpg")
-print(result)
-```
-
-Return structure (stable contract; numbers below are **illustrative only**):
+## 2. Output contract (unchanged)
 
 ```python
 {
-    "condition_score": 0.73,
-    "label": "high",
-    "probabilities": {"low": 0.10, "average": 0.24, "high": 0.66},
-    "confidence": 0.66,
-    "model": "mobilenet_v2",
-    "score_type": "market_derived_visual_proxy",
+  "condition_score": 0.0..1.0,                 # 0.5*P(average) + 1.0*P(high)
+  "label": "low" | "average" | "high",         # argmax of 3-class probabilities
+  "probabilities": {"low": ..., "average": ..., "high": ...},  # sum 1
+  "confidence": float,                         # max probability
+  "model": "mobilenet_v2" | "efficientnet_b0",
+  "score_type": "market_derived_visual_proxy",
 }
 ```
 
-| Field | Meaning |
-|---|---|
-| `condition_score` | `0.5 * P(average) + 1.0 * P(high)`, always in `[0, 1]`. |
-| `label` | Argmax proxy class: `low`, `average`, `high`. |
-| `probabilities` | Softmax class probabilities; sum to ~1. With label smoothing they are deliberately softened, so `confidence` is **not** calibrated certainty. |
-| `confidence` | Maximum class probability. Useful for filtering, not a guarantee. |
-| `model` | Architecture reconstructed from the checkpoint (`mobilenet_v2` or `efficientnet_b0`). |
-| `score_type` | Always `market_derived_visual_proxy` — a reminder of the interpretation limit. |
+`score()`/`score_batch()` accept RGB, grayscale and RGBA images and path-like
+objects. Invalid paths raise `FileNotFoundError`, undecodable files raise
+`ValueError`, and non-finite model outputs raise `RuntimeError` — there is no
+fabricated fallback score. `score_batch` returns results in input order.
 
-Inference is deterministic for a fixed checkpoint and device (eval mode,
-gradients disabled). RGB conversion happens automatically for grayscale, RGBA
-and palette images.
+Append `condition_score` as **one soft feature** to Member B's structural
+features. Do not use `label` as a hard condition verdict.
 
----
+## 3. Leakage risk — the important part
 
-## 3. Score many images
+If Member B trains on `condition_score` values produced by the **same CNN that
+saw those images during training**, the visual feature is in-sample. The
+structural model will over-trust it, and any offline validation will look better
+than reality. Two additional risks from the data itself:
 
-```python
-paths = [f"/kaggle/input/.../socal_pics/{image_id}.jpg" for image_id in df["image_id"]]
-results = agent.score_batch(paths, batch_size=64)
+- duplicate / near-duplicate photos split across train and test;
+- multiple listings on the same street (or city) across splits.
 
-df["condition_score"] = [r["condition_score"] for r in results]
-df["visual_label"] = [r["label"] for r in results]
-df["visual_confidence"] = [r["confidence"] for r in results]
-```
-
-`score_batch` returns results in input order and raises on any invalid path or
-corrupted image; it never substitutes a fabricated score.
-
----
-
-## 4. Handle missing or invalid images
-
-Wrap calls where the image may be absent (the agent raises clear exceptions):
+Run once on Kaggle before relying on held-out numbers:
 
 ```python
-from src.vision_agent import VisionAgent
-
-agent = VisionAgent(checkpoint_path="models/best_model.pth")
-
-def safe_score(path):
-    try:
-        return agent.score(path)["condition_score"]
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
-        # Missing file, undecodable image, or invalid model output.
-        print(f"Skipping {path}: {exc}")
-        return None  # Member B decides how to impute; do NOT invent a score here.
-
-scores = [safe_score(p) for p in paths]
+!python src/data_audit.py --split_file \
+   /kaggle/working/output/experiments/e0_reference/models/split_indices.json
 ```
 
-Recommended policy: keep `None` as missing and let Member B's pipeline decide
-whether to impute with the training-set mean or add a missingness indicator.
-Do not fill with a fabricated "average" CNN score.
+## 4. Practical OOF strategy for training rows
 
----
-
-## 5. Use the score as an additional feature
-
-Member B owns all of the following; Member A deliberately does not implement it.
+The CNN's **training rows must be scored out-of-fold**; its untouched test rows
+must be scored only by the final selected checkpoint.
 
 ```python
-# --- Member B's pipeline (illustrative only, NOT part of this repository) ---
-import os
-from src.vision_agent import VisionAgent
+# 1) Build folds from the CANONICAL TRAIN split only (test is never folded).
+!python src/make_folds.py --n_folds 5 --seed 42 \
+    --output_dir /kaggle/working/output/oof
 
-agent = VisionAgent(checkpoint_path="models/best_model.pth")
-images_dir = "/kaggle/input/datasets/nikhilkushwaha2529/real-estate-with-image/Real_estatewith_image/archive-2/socal2/socal_pics/"
+# 2) Train one CNN per fold, reusing each fold's saved split.
+!python src/train.py --split_file /kaggle/working/output/oof/folds/fold_0.json \
+    --output_dir /kaggle/working/output/oof/fold_0 --seed 42
+# ... repeat for fold_1 .. fold_4 (same flags, only split_file/output_dir change)
 
-df["condition_score"] = [
-    agent.score(os.path.join(images_dir, f"{image_id}.jpg"))["condition_score"]
-    for image_id in df["image_id"]
-]
-
-# Structural feature matrix X_struct: bed, bath, sqft, city, ...
-# X_final = concat[X_struct, df[["condition_score"]]]
-# RandomForest -> its prediction -> LinearRegression -> final price estimate.
+# 3) Score each held-out fold with its own checkpoint -> OOF CSV.
+!python src/oof_predict.py --output_dir /kaggle/working/output/oof
+# writes /kaggle/working/output/oof/oof_visual_scores.csv
 ```
 
-Practical notes for Member B:
+`oof_visual_scores.csv` columns: `image_id`, `fold`, `condition_score`, `label`,
+`confidence`, `model`, `checkpoint`. Every training row appears exactly once and
+is scored only by a model that never trained on it. The scripts fail closed on
+missing checkpoints, overlapping folds, incomplete coverage or any test-id
+leakage. OOF folds are a **different protocol** from the 70/15/15 experiments:
+never mix OOF scores with experiment validation metrics.
 
-- Score **each image once** and reuse the value; do not refit the CNN.
-- Use the same checkpoint (and therefore the same label methodology) for every
-  row so the feature has a consistent meaning.
-- `condition_score` is relative to the SoCal price-per-sqft market used to build
-  the labels. It is not portable to another market without retraining.
-- Do not use the test split to decide how much weight to give this feature.
+Member B then:
 
----
+- joins `oof_visual_scores.csv` to its **training** rows by `image_id`;
+- uses the selected final checkpoint via `VisionAgent` for validation/test rows;
+- keeps the OOF split consistent with its own cross-validation where possible;
+- never trains on scores from a checkpoint that saw the same image.
 
-## 6. Troubleshooting
+## 5. Readiness
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `RuntimeError: Load a checkpoint first` | No checkpoint provided. | Pass `checkpoint_path=` or call `.load(path)`. |
-| `FileNotFoundError` on image | Wrong base directory or filename. | Confirm `<image_id>.jpg` exists under `--images_dir`. |
-| `ValueError: Could not read image` | Corrupt/unsupported file. | Skip the row via the `safe_score` pattern above. |
-| `ValueError: Unsupported checkpoint architecture` | Checkpoint from an older/incompatible package. | Use the package version that produced the checkpoint. |
-| Probabilities look "flat" | Label smoothing (0.05) plus a weak proxy label. | Expected; do not interpret as model confidence. |
-
----
-
-## 7. Contract summary
-
-- Stable API: `VisionAgent(checkpoint_path=...)`, `.score(path)`, `.score_batch(paths)`.
-- Stable fields: `condition_score`, `label`, `probabilities`, `confidence`, `model`, `score_type`.
-- No dataset CSV, no pretrained download, no training imports at inference time.
-- Prohibited interpretations are documented in `docs/MODEL_CARD.md`.
+The API and OOF tooling are implemented and unit-tested (Kaggle torch tests:
+`python -m unittest discover -s tests`). No checkpoint export or Member B run
+was performed locally. The incumbent checkpoint remains the default until a new
+experiment wins validation macro F1 and receives its single test evaluation.

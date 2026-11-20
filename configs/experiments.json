@@ -1,0 +1,76 @@
+{
+  "root": "/kaggle/working/output/experiments",
+  "defaults": {
+    "csv_path": "/kaggle/input/datasets/nikhilkushwaha2529/real-estate-with-image/Real_estatewith_image/archive-2/socal2/socal2.csv",
+    "images_dir": "/kaggle/input/datasets/nikhilkushwaha2529/real-estate-with-image/Real_estatewith_image/archive-2/socal2/socal_pics/",
+    "architecture": "mobilenet_v2",
+    "image_size": 224,
+    "resize_size": 256,
+    "label_config_version": "v2_log_shrunk",
+    "shrinkage_k": 10.0,
+    "augmentation": "improved",
+    "epochs": 30,
+    "batch_size": 64,
+    "lr": 0.0001,
+    "lr_finetune": 0.00001,
+    "weight_decay": 0.0001,
+    "finetune_blocks": 4,
+    "patience": 5,
+    "scheduler": "cosine",
+    "loss": "ce",
+    "label_smoothing": 0.05,
+    "class_weight": "auto",
+    "class_weight_beta": 0.9999,
+    "focal_gamma": 2.0,
+    "ordinal_epsilon": 0.1,
+    "imbalance_ratio": 1.5,
+    "seed": 42,
+    "num_workers": 2,
+    "device": "auto"
+  },
+  "experiments": {
+    "e0_reference": {
+      "description": "Fresh controlled reference: MobileNetV2, v2 labels, CE + original auto weighting. NOT the historical improved_mobilenet checkpoint."
+    },
+    "e1_no_weighting": {
+      "description": "Unweighted CE with no label smoothing; isolates the effect of the original imbalance rule.",
+      "args": {"class_weight": "none", "label_smoothing": 0.0}
+    },
+    "e2_balanced_ce": {
+      "description": "Always-on inverse-frequency class weights.",
+      "args": {"class_weight": "balanced"}
+    },
+    "e3_effective_number": {
+      "description": "Effective-number class weights (beta=0.9999, mean 1).",
+      "args": {"class_weight": "effective_number"}
+    },
+    "e4_focal": {
+      "description": "Focal loss (gamma=2), no class weights; focuses on hard/noisy proxy examples.",
+      "args": {"loss": "focal", "class_weight": "none", "label_smoothing": 0.0}
+    },
+    "e5_ordinal_smooth": {
+      "description": "Ordinal-aware soft targets (epsilon=0.1) for the ordered low/average/high proxy.",
+      "args": {"loss": "ordinal_smooth", "class_weight": "none", "label_smoothing": 0.0}
+    },
+    "e6_efficientnet_b0": {
+      "description": "Architecture comparison at identical resolution, labels and loss.",
+      "args": {"architecture": "efficientnet_b0"}
+    },
+    "e7_higher_resolution": {
+      "description": "Image resolution ablation: 256x256 centre crop from 288px.",
+      "args": {"image_size": 256, "resize_size": 288}
+    },
+    "e8_legacy_augmentation": {
+      "description": "Augmentation ablation: original random-crop/rotation recipe.",
+      "args": {"augmentation": "legacy"}
+    },
+    "e9_shrinkage_k1": {
+      "description": "Label-shrinkage sensitivity: K=1 lets small cities define their own reference.",
+      "args": {"shrinkage_k": 1.0}
+    },
+    "e10_longer_finetune": {
+      "description": "Training-configuration ablation: more epochs and unfrozen blocks.",
+      "args": {"epochs": 45, "finetune_blocks": 8, "patience": 8}
+    }
+  }
+}

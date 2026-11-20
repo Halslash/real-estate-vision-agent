@@ -18,6 +18,7 @@ import json
 import os
 import random
 import sys
+import time
 from typing import Any, Dict
 
 import numpy as np
@@ -71,6 +72,15 @@ from src.model import (  # noqa: E402
     make_checkpoint,
     save_checkpoint,
     unfreeze_last_blocks,
+)
+from src.losses import (  # noqa: E402
+    CLASS_WEIGHT_AUTO,
+    CLASS_WEIGHT_NONE,
+    LOSS_CE,
+    SUPPORTED_CLASS_WEIGHTING,
+    SUPPORTED_LOSSES,
+    compute_class_weights,
+    make_criterion,
 )
 from src.plots import plot_learning_curves  # noqa: E402
 
@@ -128,6 +138,22 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Training augmentation recipe (improved removes rotation/crop).")
     parser.add_argument("--device", type=str, default="auto",
                         choices=["auto", "cpu", "cuda"], help="CPU fallback is supported.")
+
+    # Controlled-experiment options. Defaults reproduce the existing improved run.
+    parser.add_argument("--split_file", type=str, default=None,
+                        help="Optional saved split_indices.json. When given, the split "
+                             "is reused verbatim instead of regenerated (needed for OOF folds).")
+    parser.add_argument("--loss", type=str, default=LOSS_CE, choices=list(SUPPORTED_LOSSES),
+                        help="Training loss; 'ce' keeps the existing cross-entropy recipe.")
+    parser.add_argument("--class_weight", type=str, default=CLASS_WEIGHT_AUTO,
+                        choices=list(SUPPORTED_CLASS_WEIGHTING),
+                        help="'auto' is the original inverse-frequency rule; 'none', "
+                             "'balanced' and 'effective_number' are controlled alternatives.")
+    parser.add_argument("--class_weight_beta", type=float, default=0.9999,
+                        help="Beta for --class_weight effective_number.")
+    parser.add_argument("--focal_gamma", type=float, default=2.0)
+    parser.add_argument("--ordinal_epsilon", type=float, default=0.1,
+                        help="Adjacent-class mass for --loss ordinal_smooth.")
     return parser
 
 
@@ -208,7 +234,12 @@ def run_epoch(
     return {
         "loss": total_loss / max(total, 1),
         "accuracy": correct / max(total, 1),
-        "f1_macro": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        # Fixed 3-label support: a class missing from one epoch's minibatches
+        # must not silently change the meaning of the selection metric.
+        "f1_macro": float(f1_score(
+            y_true, y_pred, average="macro",
+            labels=list(range(NUM_CLASSES)), zero_division=0,
+        )),
         "y_true": y_true,
         "y_pred": y_pred,
     }
@@ -225,9 +256,17 @@ def main(argv=None) -> None:
         )
     if args.label_smoothing < 0.0 or args.label_smoothing >= 1.0:
         raise ValueError("--label_smoothing must be in [0, 1).")
+    if args.loss != LOSS_CE and args.label_smoothing != 0.0:
+        raise ValueError(
+            f"--loss {args.loss} defines its own target smoothing; pass "
+            "--label_smoothing 0 with it (or keep --loss ce)."
+        )
 
     set_seed(args.seed)
     device = resolve_device(args.device)
+    train_started = time.perf_counter()
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     print(f"Using device: {device}")
     print(f"Architecture: {args.architecture} | label config: {args.label_config_version}")
 
@@ -250,7 +289,29 @@ def main(argv=None) -> None:
     if not records:
         raise RuntimeError("No valid samples were found; nothing to train on.")
 
-    split = make_stratified_split(records, seed=args.seed)
+    if args.split_file:
+        if not os.path.isfile(args.split_file):
+            raise FileNotFoundError(f"--split_file not found: {args.split_file}")
+        with open(args.split_file, "r", encoding="utf-8") as handle:
+            split = json.load(handle)
+        for name in ("train", "val", "test"):
+            if not isinstance(split.get(name), list):
+                raise ValueError(f"--split_file is missing a '{name}' id list.")
+        if not split["train"] or not split["val"]:
+            raise ValueError("--split_file must have non-empty train and val lists.")
+        known = {r["image_id"] for r in records}
+        for name in ("train", "val", "test"):
+            unknown = set(split[name]) - known
+            if unknown:
+                raise ValueError(
+                    f"--split_file '{name}' contains ids absent from CSV/images "
+                    f"(e.g. {sorted(unknown)[:5]}). Check --csv_path/--images_dir."
+                )
+        print(f"Reusing split from {args.split_file} "
+              f"(train={len(split['train'])}, val={len(split['val'])}, "
+              f"test={len(split['test'])})")
+    else:
+        split = make_stratified_split(records, seed=args.seed)
     train_ids = set(split["train"])
     train_records = [r for r in records if r["image_id"] in train_ids]
 
@@ -263,7 +324,7 @@ def main(argv=None) -> None:
     stats["columns"] = detected
     compute_labels(records, stats)
     by_split = split_records(records, split)
-    validate_labeled_split(by_split)
+    validate_labeled_split(by_split, require_test=bool(split["test"]))
     print_summary(records, skipped, split, by_split)
 
     preprocessing = {
@@ -298,7 +359,7 @@ def main(argv=None) -> None:
         val_dataset, shuffle=False, drop_last=False, **loader_kwargs
     )
 
-    # ---- loss (weighted only when imbalance is significant) -----------------
+    # ---- loss ---------------------------------------------------------------
     counts = np.bincount(
         [r["label"] for r in by_split["train"]], minlength=NUM_CLASSES
     )
@@ -308,23 +369,25 @@ def main(argv=None) -> None:
             "Increase --max_images or change the dataset; classes: "
             + str(counts.tolist())
         )
-    weight_values = counts.sum() / (NUM_CLASSES * counts)
-    weighted = bool(weight_values.max() / weight_values.min() > args.imbalance_ratio)
-    class_weights = torch.tensor(
-        weight_values if weighted else np.ones(NUM_CLASSES, dtype=float),
-        dtype=torch.float32,
-        device=device,
+    weight_values, weighted = compute_class_weights(
+        counts,
+        args.class_weight,
+        beta=args.class_weight_beta,
+        imbalance_ratio=args.imbalance_ratio,
     )
-    try:
-        criterion = nn.CrossEntropyLoss(
-            weight=class_weights, label_smoothing=args.label_smoothing
-        )
-    except TypeError as exc:
-        raise RuntimeError(
-            "--label_smoothing requires a PyTorch version that supports "
-            "nn.CrossEntropyLoss(label_smoothing=...). Upgrade PyTorch or pass 0."
-        ) from exc
-    print(f"Using weighted CrossEntropyLoss: {weighted} (class counts: {counts.tolist()})")
+    class_weights = torch.tensor(weight_values, dtype=torch.float32, device=device)
+    criterion = make_criterion(
+        args.loss,
+        class_weights,
+        label_smoothing=args.label_smoothing,
+        focal_gamma=args.focal_gamma,
+        ordinal_epsilon=args.ordinal_epsilon,
+    )
+    print(
+        f"Loss: {args.loss} | class weighting: {args.class_weight} "
+        f"(active={weighted}, counts={counts.tolist()}, "
+        f"weights={np.round(weight_values, 3).tolist()})"
+    )
     print(f"Label smoothing: {args.label_smoothing} | LR schedule: {args.scheduler}")
 
     # ---- model / phases -----------------------------------------------------
@@ -353,6 +416,13 @@ def main(argv=None) -> None:
         "phase2_epochs": phase2_epochs,
         "weighted_loss": weighted,
         "class_counts": counts.tolist(),
+        "split_source": args.split_file or "generated",
+        "loss": args.loss,
+        "class_weight": args.class_weight,
+        "class_weights": weight_values.tolist(),
+        "class_weight_beta": args.class_weight_beta,
+        "focal_gamma": args.focal_gamma,
+        "ordinal_epsilon": args.ordinal_epsilon,
         "detected_columns": detected,
         "resolved_device": str(device),
         "label_config_version": args.label_config_version,
@@ -500,10 +570,17 @@ def main(argv=None) -> None:
     })
     dump_json("split_indices.json", {name: split[name] for name in ("train", "val", "test")})
     dump_json("preprocessing_config.json", preprocessing)
+    duration_seconds = time.perf_counter() - train_started
+    peak_vram_mb = None
+    if device.type == "cuda":
+        peak_vram_mb = round(torch.cuda.max_memory_allocated(device) / (1024 ** 2), 1)
     dump_json("training_summary.json", {
         "best_epoch": best_epoch,
         "best_val_macro_f1": best_f1,
         "final_val_metrics": best_val_metrics,
+        "training_duration_seconds": round(duration_seconds, 1),
+        "peak_gpu_memory_mb": peak_vram_mb,
+        "resolved_device": str(device),
         "early_stopped": bool(early_stopped),
         "total_epochs_run": len(history),
         "phase1_epochs": phase1_epochs,

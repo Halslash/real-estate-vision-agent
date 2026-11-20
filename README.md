@@ -23,11 +23,18 @@ The score is one soft feature Member B can append to their structural matrix. Al
 |---|---|
 | `docs/KAGGLE_GUIDE.md` | Copy-paste Kaggle commands A–H (train, evaluate, probe, export, download). |
 | `docs/MEMBER_B_INTEGRATION.md` | The `VisionAgent` API contract and integration examples. |
-| `docs/EXPERIMENT_PLAN.md` | Experiment IDs, decision rules and PENDING results table. |
+| `docs/EXPERIMENT_PLAN.md` | 11 controlled experiments and the mandatory selection rules. |
+| `docs/EXPERIMENT_RESULTS.md` | Comparison table (architecture, labels, loss, F1, duration, checkpoint). |
 | `docs/MODEL_CARD.md` | Intended use, prohibited interpretations, limitations. |
-| `docs/FINAL_MEMBER_A_REPORT.md` | Report template; numbers filled only after real Kaggle runs. |
+| `docs/FINAL_MEMBER_A_REPORT.md` | Historical results + final selection report. |
 | `docs/IMPLEMENTATION_COMPLETION_REPORT.md` | Static implementation status and verification checklist. |
-| `docs/CNN_PERFORMANCE_AUDIT.md` | Primary technical review of the original baseline. |
+| `docs/CNN_PERFORMANCE_AUDIT.md` | Evidence-backed audit: what was wrong and what changed. |
+
+New tooling: `src/run_experiment.py` + `configs/experiments.json` (isolated
+experiments), `src/losses.py` (focal/ordinal/effective-number),
+`src/data_audit.py` (leakage diagnostics), `src/make_folds.py` +
+`src/oof_predict.py` (honest OOF scores for Member B), and `tests/`.
+Run locally with `python -m unittest discover -s tests -v`; train only on Kaggle.
 
 ---
 

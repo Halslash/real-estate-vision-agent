@@ -14,4 +14,9 @@ __all__ = [
     "probe",
     "inspect_csv",
     "vision_agent",
+    "losses",
+    "data_audit",
+    "make_folds",
+    "oof_predict",
+    "run_experiment",
 ]

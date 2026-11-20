@@ -622,10 +622,15 @@ def compute_labels(
 
 
 def validate_labeled_split(
-    labeled: Dict[str, List[Dict[str, Any]]]
+    labeled: Dict[str, List[Dict[str, Any]]], require_test: bool = True
 ) -> None:
-    """Fail clearly on small datasets instead of training an invalid split."""
-    for name in ("train", "val", "test"):
+    """Fail clearly on small datasets instead of training an invalid split.
+
+    ``require_test=False`` is only for OOF folds, whose test list is empty by
+    design because the untouched test split is reserved for final evaluation.
+    """
+    names = ("train", "val", "test") if require_test else ("train", "val")
+    for name in names:
         if not labeled[name]:
             raise ValueError(
                 f"The {name} split is empty. Increase --max_images or use a "
