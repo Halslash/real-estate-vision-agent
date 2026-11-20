@@ -1,7 +1,12 @@
+# Core training / inference
 torch
 torchvision
 numpy
 pandas
-scikit-learn
-matplotlib
 Pillow
+
+# Metrics, stratified split and the optional frozen-feature probe (src/probe.py)
+scikit-learn
+
+# Learning curves and confusion-matrix figures
+matplotlib

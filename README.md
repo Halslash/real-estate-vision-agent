@@ -1,181 +1,133 @@
-# Member A — CNN Vision Agent
+# Member A — CNN Visual Proxy Agent
 
 **Projet 10: Évaluation Immobilière Multi-Modale (PropTech)**
-Member A: CNN-based visual analysis of house exterior photos.
-Member B: structural features (Random Forest) and final price estimation (Linear Regression), integrating Member A's visual output.
 
-> **Scientific honesty note:** this CNN estimates a **market-derived visual-quality proxy**, not an objectively verified physical or aesthetic condition. It does **not** predict the final property price. Member B owns price estimation.
+- **Member A (this repo):** visual analysis of house exterior photos → normalized visual proxy score + class label.
+- **Member B (separate):** structural Random Forest + final Linear Regression → final price estimate.
 
----
-
-## 1. Project description
-
-This repository contains only Member A's deliverable: a transfer-learning image classifier that looks at the **exterior photograph** of a Southern California property and returns a normalized `condition_score` in `[0, 1]`.
-
-Because the dataset has **no human-annotated condition labels**, labels are constructed from market data (price per square foot relative to comparable properties). The CNN learns to recognize visual patterns correlated with that market-derived signal. The score is a continuous proxy feature that Member B can append to their structural feature matrix.
+> **Scientific honesty note (read first):** this CNN produces a **market-derived visual proxy**, not an objectively verified physical-condition or aesthetic grade, and **not a price estimate**. The dataset has no human condition labels; targets are tertiles of price per square foot relative to comparable properties. A higher score does **not** prove better physical condition. Member B owns price estimation.
 
 ---
 
-## 2. Responsibility split
+## 1. What this repository contains
 
-| Member | Responsibility | Output |
-|--------|----------------|--------|
-| **A (this repo)** | Image preprocessing, proxy labels, MobileNetV2 training, visual scoring, evaluation, `VisionAgent` API | `condition_score` + `label` per image |
-| **B (separate)** | Structural Random Forest, final Linear Regression, combining structural + visual features | Final estimated price |
+A transfer-learning image classifier (MobileNetV2 by default, EfficientNet-B0 optional) that looks at a property's **exterior photograph** and returns a `condition_score` in `[0, 1]`. It is intentionally only Member A's deliverable; no Random Forest, Linear Regression, or final price prediction is implemented here.
 
-The boundary is the `VisionAgent.score()` method. Member B never needs to touch training code.
+The score is one soft feature Member B can append to their structural matrix. All interpretation limits are documented in `docs/MODEL_CARD.md`.
 
 ---
 
-## 3. Architecture
+## 2. Quick links
+
+| Document | Purpose |
+|---|---|
+| `docs/KAGGLE_GUIDE.md` | Copy-paste Kaggle commands A–H (train, evaluate, probe, export, download). |
+| `docs/MEMBER_B_INTEGRATION.md` | The `VisionAgent` API contract and integration examples. |
+| `docs/EXPERIMENT_PLAN.md` | Experiment IDs, decision rules and PENDING results table. |
+| `docs/MODEL_CARD.md` | Intended use, prohibited interpretations, limitations. |
+| `docs/FINAL_MEMBER_A_REPORT.md` | Report template; numbers filled only after real Kaggle runs. |
+| `docs/IMPLEMENTATION_COMPLETION_REPORT.md` | Static implementation status and verification checklist. |
+| `docs/CNN_PERFORMANCE_AUDIT.md` | Primary technical review of the original baseline. |
+
+---
+
+## 3. Architecture and pipeline
 
 ```
 Image (JPEG)
-   -> RGB conversion + resize/center crop (224x224) + ImageNet normalization
-   -> MobileNetV2 (ImageNet pretrained weights)
-   -> Dropout(0.2) -> Linear(1280 -> 3)
-   -> Softmax -> P(low), P(average), P(high)
-   -> condition_score = 0.5 * P(average) + 1.0 * P(high)
+  -> RGB conversion + Resize(256) + CenterCrop(224) + ImageNet normalization
+  -> MobileNetV2 (ImageNet pretrained)   [or EfficientNet-B0]
+  -> Dropout(0.2) -> Linear(in_features -> 3)
+  -> Softmax -> P(low), P(average), P(high)
+  -> condition_score = 0.5 * P(average) + 1.0 * P(high)
 ```
 
-**Training is two-phase:**
+**Two-phase training** (`src/train.py`):
 
-1. **Feature extraction:** the entire MobileNetV2 backbone is frozen; only the new classification head is trained with AdamW (`--lr`, default `1e-4`) and cross-entropy loss. This phase always completes.
-2. **Fine-tuning:** the last `--finetune_blocks` (default 4) backbone blocks are unfrozen and trained with a lower learning rate (`--lr_finetune`, default `1e-5`). Early stopping monitors validation macro F1 **in this phase only**, so Phase 1 can never be cut short and Phase 2 is never skipped on a normal run.
+1. **Feature extraction** — backbone frozen, only the new head trained with AdamW (`--lr`, default `1e-4`). Always completes.
+2. **Fine-tuning** — last `--finetune_blocks` (default 4) unfrozen at a lower LR (`--lr_finetune`, `1e-5`). Validation macro F1 drives early stopping (`--patience 5`) **in this phase only**.
 
-If the class counts are imbalanced (max/min class weight above `--imbalance_ratio`, default `1.5`), a weighted cross-entropy loss is used.
+`--epochs` is the **total** across both phases (default 20 → ~10 + 10). A per-phase cosine LR schedule (`--scheduler cosine`, or `none`) and label smoothing (`--label_smoothing`, default `0.05`) are configurable. Weighted cross-entropy is used only when class imbalance exceeds `--imbalance_ratio` (default 1.5). Pretrained ImageNet weights are mandatory: a download failure raises a clear error, never silent random initialization.
 
-`--epochs` is the **total** number of epochs across both phases, split roughly in half (e.g. 10 -> 5 + 5). With `--epochs 1`, only Phase 1 runs, which is sufficient for a smoke test.
-
-Unlike a regression head, the 3-class formulation gives calibrated-style probabilities that are easy for Member B to consume and inspect.
+Seeds (Python/NumPy/PyTorch/CUDA) are fixed and cuDNN is deterministic. CPU fallback is supported via `--device cpu` (or automatic with `auto`).
 
 ---
 
-## 4. Dataset
+## 4. Dataset and label construction
 
-On Kaggle, this project expects:
+On Kaggle this project expects:
 
-- Images:
-  `/kaggle/input/datasets/nikhilkushwaha2529/real-estate-with-image/Real_estatewith_image/archive-2/socal2/socal_pics/`
-- CSV:
-  `/kaggle/input/datasets/nikhilkushwaha2529/real-estate-with-image/Real_estatewith_image/archive-2/socal2/socal2.csv`
+- CSV: `/kaggle/input/datasets/nikhilkushwaha2529/real-estate-with-image/Real_estatewith_image/archive-2/socal2/socal2.csv`
+- Images: `/kaggle/input/datasets/nikhilkushwaha2529/real-estate-with-image/Real_estatewith_image/archive-2/socal2/socal_pics/`
 
-Images are named `0.jpg`, `1.jpg`, ... (~15,000 files). Each CSV row is matched to `<image_id>.jpg`.
+~15,474 rows with columns `image_id, street, citi, n_citi, bed, bath, sqft, price`; images named `<image_id>.jpg`. Columns are detected case-insensitively; pass `--id_col image_id --price_col price --sqft_col sqft --city_col citi` to be explicit (ambiguous matches raise instead of guessing).
 
-Column names are detected case-insensitively using aliases (e.g. `image_id`/`id`/`image`, `price`/`listing_price`, `sqft`/`square_feet`/`living_area`, `city`/`citi`/`n_citi`). City is optional. Override detection with:
+Lazy validation: the CSV scan only checks file existence; pixels are decoded lazily in `HouseImageDataset.__getitem__` with a bounded corrupt-image retry that keeps the label of the image actually loaded. Grayscale/RGBA/palette images are converted to RGB.
 
-```
---id_col --price_col --sqft_col --city_col
-```
+**Two versioned proxy-label methodologies** (the checkpoint records which one it uses):
 
-If a required column is missing, the script prints all available columns and raises a clear error. If several columns plausibly match a role (for example `price` and `price_per_sqft`, or `living_area` and `lot_area`), detection also raises an ambiguity error instead of guessing — pass the exact column with an override.
+- `v1_legacy` — the original baseline: clip raw `price/sqft` to train-only 1st/99th percentiles, divide by the raw city median (global fallback), tertile the training ratios.
+- `v2_log_shrunk` (default) — `log(price/sqft)` clipped to train-only percentiles; city median shrunk toward the global median with `k = 10` pseudo-counts (`m̂_c = (n_c·m_c + k·m_global)/(n_c + k)`); proxy value is `clipped_log_pps − m̂_c`; tertiles from observed distinct training values.
 
-**Lazy image validation:** the initial CSV scan only checks that `<image_id>.jpg` exists via `os.path.isfile()`; it does **not** open or decode images. Rows with missing/non-positive price or square footage, duplicate image IDs, or missing files are skipped during this fast scan (~15,000 images). Actual pixel decoding happens lazily in `HouseImageDataset.__getitem__()` while training/evaluation batches are built. If a file is corrupt or becomes unreadable, a bounded retry skips it and uses the next readable image while keeping the label of the image actually loaded. Grayscale, RGBA and palette images are converted to RGB at decode time.
-
-**Always run `inspect_csv.py` first** if detection fails or reports ambiguity, then pass the real column names explicitly.
+In both cases **all statistics are fitted on the training split only** and stored in the checkpoint; validation/test never influence them, and a checkpoint is never evaluated with another version's thresholds. The 70/15/15 stratified split (seed 42) uses temporary price-per-sqft quantiles only to balance itself — those bins are not labels.
 
 ---
 
-## 5. Proxy-label construction and limitations
+## 5. Augmentation policy
 
-For each property:
-
-1. `price_per_sqft = price / sqft`.
-2. Clip `price_per_sqft` to the **1st and 99th percentiles fitted on the training split only**.
-3. For each city, compute the **median** clipped price per square foot on the training split. Unseen/missing cities use the global training median.
-4. `ratio = clipped_price_per_sqft / city_median`.
-5. Split training ratios into tertiles -> `0 = low`, `1 = average`, `2 = high`. The same thresholds are applied unchanged to validation and test.
-
-The 70/15/15 stratified split uses temporary quantiles of raw price-per-sqft **only to balance the split**; those temporary bins are not the labels and are never used to fit city statistics or thresholds. The split is seeded (42), has no overlapping image IDs, and raises a clear error if any stratum is too small.
-
-**Limitations — important for the presentation:**
-
-- The labels are a **market proxy**. A high price per square foot may reflect location, lot size, renovations, or school districts — not merely a better-looking exterior.
-- The model can learn city-specific price conventions rather than pure visual quality.
-- Tertile classes are relative to this dataset, not absolute quality grades.
-- The score is **not calibrated** as a physical-condition measurement and should be treated as a soft feature, not ground truth.
-- No test data is used for fitting statistics, thresholds, early stopping or model selection.
-
-All fitted values (clip bounds, city medians, global median, class thresholds, detected columns) are saved in the checkpoint and in `models/*.json`, so training, evaluation and inference stay consistent without the CSV.
+- **Training (`improved`, default):** Resize(256) + CenterCrop(224) — geometry aligned with evaluation; horizontal flip; restrained colour jitter; ImageNet normalization. **No rotation** and no aggressive random crop, which could rotate houses or remove rooflines/facades.
+- **Legacy (`--augmentation legacy`):** the original RandomResizedCrop + flip + 10° rotation + stronger jitter, for controlled comparison.
+- **Validation/test/inference:** deterministic Resize(256) + CenterCrop(224) + ImageNet normalization, built from the checkpoint's saved preprocessing config.
 
 ---
 
-## 6. Training methodology
+## 6. Evaluation methodology
 
-- GPU is used when `torch.cuda.is_available()`, otherwise CPU.
-- Batch size 64, 2 DataLoader workers, seed 42.
-- Train augmentation: random resized crop, horizontal flip, small rotation, color jitter, ImageNet normalization.
-- Validation/test: resize to 256, center crop 224, ImageNet normalization (exact same transform as inference).
-- Best checkpoint selected by **validation macro F1**; early stopping (`--patience`, default 5) applies to Phase 2 only.
-- Pretrained ImageNet weights are mandatory: a download failure raises a clear error; the code never silently falls back to random initialization.
-- Small datasets fail loudly: if a split is empty, or clipping/tertiles cannot produce three distinct classes in training, training raises a clear error instead of silently producing an invalid split. The 200-image smoke test is checked the same way.
+`src/evaluate.py` reloads the checkpoint, reads its sibling `split_indices.json`, reuses the saved label statistics, column names, preprocessing and architecture, rebuilds the exact model, and evaluates **only the untouched test split** — no split is regenerated and the test set is never used for selection. It reports:
 
-Artifacts written to `<output_dir>` (default `/kaggle/working/output`):
+- Accuracy; macro precision/recall/F1; weighted F1; per-class metrics.
+- True vs predicted class distributions; raw, row-normalized (recall) and column-normalized confusion matrices.
+- Honest reference baselines computed on this split (majority class, seeded uniform random).
+
+Artifacts written under `<output_dir>/`:
 
 ```
 models/
-  best_model.pth             # self-contained checkpoint (weights + config + stats)
-  model_config.json          # argparse config and derived training settings
-  preprocessing_stats.json   # clip bounds, medians, thresholds
-  class_thresholds.json      # class thresholds and label names
-  city_medians.json          # per-city + global medians
+  best_model.pth             # self-contained checkpoint: weights + arch + preprocessing + stats + history
+  model_config.json          # argparse config + derived training settings
+  preprocessing_stats.json   # clip bounds, medians, thresholds, shrinkage, label version
+  class_thresholds.json      # thresholds and label names
+  city_medians.json          # raw/shrunk city medians and counts
   split_indices.json         # exact train/val/test image IDs
-  preprocessing_config.json  # image size / mean / std
+  preprocessing_config.json  # image size / mean / std / augmentation / arch
+  training_summary.json      # best epoch, best F1, early-stopping decision
 results/
-  training_history.csv       # per-epoch losses, accuracy, macro F1, learning rate
+  training_history.csv       # per-epoch losses, accuracy, macro F1, LR
+  learning_curves.png
+  metrics.json
+  classification_report.json
+  evaluation_report.md
+  confusion_matrix.png
+  normalized_confusion_matrix.png
+  column_normalized_confusion_matrix.png
+  prediction_distribution.png
 ```
 
----
-
-## 7. Evaluation methodology
-
-`src/evaluate.py` reloads the checkpoint from `<output_dir>/models/best_model.pth` (override with `--checkpoint`), reads `split_indices.json` from the checkpoint's own folder, reuses the saved proxy-label statistics and saved column names, rebuilds **the exact same model**, and evaluates only on the untouched test set — no split is regenerated:
-
-- Accuracy
-- Macro precision, macro recall, macro F1
-- Weighted F1
-- Per-class precision / recall / F1 / support
-- Confusion matrix and row-normalized confusion matrix
-
-Outputs (in `<output_dir>/results/`):
-
-- `confusion_matrix.png`
-- `normalized_confusion_matrix.png`
-- `classification_report.json`
-- `metrics.json`
-
-The test set is never used for early stopping or model selection.
+**Optional frozen probe** (`src/probe.py`): logistic regression on frozen features, fitted on the saved train split and scored on validation only; separate `probe_results.json`, no weights or test data touched. See `docs/KAGGLE_GUIDE.md` section E.
 
 ---
 
-## 8. Output files summary
-
-| File | Purpose |
-|------|---------|
-| `models/best_model.pth` | Trained weights + architecture info + class mapping + preprocessing config + proxy-label statistics |
-| `models/*.json` | Human-readable configuration and statistics |
-| `models/split_indices.json` | Reproduces the exact evaluation split |
-| `results/training_history.csv` | Loss/accuracy/F1 curves data |
-| `results/metrics.json` | Headline test metrics |
-| `results/classification_report.json` | Per-class metrics and matrices |
-| `results/*confusion_matrix.png` | Visual confusion matrices |
-
----
-
-## 9. VisionAgent API (for Member B)
+## 7. VisionAgent API (for Member B)
 
 ```python
 from src.vision_agent import VisionAgent
 
-agent = VisionAgent()
-agent.load("models/best_model.pth")
-
+agent = VisionAgent(
+    checkpoint_path="models/best_model.pth"   # legacy .load(path) still works
+)
 result = agent.score("example_house.jpg")
-
 print(result)
 ```
-
-Example return value (illustrative):
 
 ```python
 {
@@ -183,147 +135,69 @@ Example return value (illustrative):
     "label": "high",
     "probabilities": {"low": 0.10, "average": 0.24, "high": 0.66},
     "confidence": 0.66,
+    "model": "mobilenet_v2",
+    "score_type": "market_derived_visual_proxy",
 }
 ```
 
-- `condition_score = 0.5 * P(average) + 1.0 * P(high)`, always in `[0, 1]`.
-- `label` is the argmax class name: `low`, `average` or `high`.
-- `confidence` is the maximum class probability.
-- Probabilities sum to 1 (up to floating-point rounding).
-- Inference runs in inference mode with gradients disabled, on CUDA when available.
-- Invalid paths and corrupted images raise clear exceptions.
-- Requires **only** the checkpoint: no CSV, no dataset, no MobileNetV2 knowledge for the caller.
-
-With the default Kaggle output directory, the checkpoint lives at:
-`/kaggle/working/output/models/best_model.pth`.
-Download it into the repository's `models/` folder (or pass that path directly to `agent.load`) for the snippet above to work verbatim.
-
-**How Member B integrates it:** score every property image once, then append `condition_score` as one extra column to the structural feature table used by the Random Forest / Linear Regression pipeline, e.g.:
-
-```python
-import os
-from src.vision_agent import VisionAgent
-
-agent = VisionAgent().load("models/best_model.pth")
-df["condition_score"] = [
-    agent.score(os.path.join(images_dir, f"{image_id}.jpg"))["condition_score"]
-    for image_id in df["image_id"]
-]
-# Member B: train Random Forest on structural + condition_score,
-# then feed its output into the final Linear Regression.
-```
-
-This repository intentionally does **not** implement Member B's models.
+Batch scoring: `results = agent.score_batch(paths, batch_size=64)` (input order preserved). Inference needs **only** the checkpoint — no CSV, no dataset, no pretrained download. CPU/CUDA is auto-selected. Invalid paths or corrupt images raise clear exceptions; no fabricated fallback scores are ever returned. Full contract and integration example: `docs/MEMBER_B_INTEGRATION.md`.
 
 ---
 
-## 10. Kaggle execution instructions
+## 8. Kaggle execution (summary)
 
-Kaggle notebooks provide the libraries in `requirements.txt`; no local installation or local dataset is needed.
-
-### Step 1 — Clone repository
+All training/evaluation runs on **Kaggle GPU**, not locally. See `docs/KAGGLE_GUIDE.md` for complete copy-paste commands. In short:
 
 ```python
-!git clone YOUR_REPOSITORY_URL
-%cd vision_agent
-```
-
-(If your repository URL clones to a different folder name, `%cd` into that folder instead — the commands below assume the repository root contains `src/`.)
-
-### Step 2 — Inspect CSV
-
-```python
+# B: inspect CSV
 !python src/inspect_csv.py
+
+# C: train improved MobileNetV2 (20 epochs; separate output dir)
+!python src/train.py \
+    --csv_path <CSV> --images_dir <IMAGES> \
+    --output_dir /kaggle/working/output/improved_mobilenet \
+    --epochs 20 --batch_size 64 --seed 42 --num_workers 2 \
+    --architecture mobilenet_v2 --image_size 224 --resize_size 256 \
+    --label_config_version v2_log_shrunk --shrinkage_k 10 \
+    --augmentation improved --label_smoothing 0.05 --scheduler cosine \
+    --id_col image_id --price_col price --sqft_col sqft --city_col citi
+
+# D: evaluate the selected checkpoint once on the test split
+!python src/evaluate.py --output_dir /kaggle/working/output/improved_mobilenet
 ```
 
-If the printed column names do not match the aliases, run with overrides, e.g.:
-
-```python
-!python src/inspect_csv.py --csv_path /kaggle/input/.../socal2.csv
-```
-
-### Step 3 — Smoke test
-
-```python
-!python src/train.py --epochs 1 --max_images 200 --batch_size 16
-```
-
-### Step 4 — Full training
-
-```python
-!python src/train.py --epochs 10 --batch_size 64
-```
-
-If column auto-detection fails:
-
-```python
-!python src/train.py --epochs 10 --batch_size 64 \
-    --id_col image_id --price_col price --sqft_col sqft --city_col city
-```
-
-### Step 5 — Evaluate
-
-```python
-!python src/evaluate.py
-```
-
-`--max_images` is normally unnecessary here: evaluation reuses the saved test IDs, it does not rebuild the split. Use `--output_dir` for a non-default output location and `--checkpoint` to point at a moved checkpoint (its folder must contain `split_indices.json`).
-
-**Downloading results from Kaggle:** in the notebook right sidebar open **Output → Files**, navigate to `output/models` and `output/results`, hover a file and use the download icon. Alternatively use **File → Save & Export Version → Notebook Output** to archive the whole output directory, then download the archive. Put `best_model.pth` into this repository's `models/` folder (or keep the full `/kaggle/working/output/models/best_model.pth` path) before using `VisionAgent`.
-
-### Step 6 — Use VisionAgent
-
-```python
-from src.vision_agent import VisionAgent
-
-agent = VisionAgent()
-agent.load("models/best_model.pth")
-
-result = agent.score("example_house.jpg")
-
-print(result)
-```
+**Never overwrite the original baseline checkpoint** at `/kaggle/working/output/models/best_model.pth`; every new run uses its own `--output_dir`.
 
 ---
 
-## 11. Command-line arguments
+## 9. Command-line arguments
 
-Both `train.py` and `evaluate.py` accept:
+Core (both `train.py` and `evaluate.py`): `--images_dir`, `--csv_path`, `--output_dir`, `--epochs`, `--max_images`, `--batch_size`, `--lr`, `--id_col`, `--price_col`, `--sqft_col`, `--city_col`.
 
-| Argument | Default | Notes |
-|----------|---------|-------|
-| `--images_dir` | Kaggle `socal_pics/` path | Directory of `<id>.jpg` files |
-| `--csv_path` | Kaggle `socal2.csv` path | Metadata CSV |
-| `--output_dir` | `/kaggle/working/output` | Where models/results are written |
-| `--epochs` | `10` | Total epochs (evaluate: informational) |
-| `--max_images` | `None` | Cap for smoke tests; evaluate reuses saved IDs |
-| `--batch_size` | `64` | |
-| `--lr` | `1e-4` | Phase 1 learning rate (evaluate: informational) |
-| `--id_col` | `None` | Explicit CSV column override |
-| `--price_col` | `None` | Explicit CSV column override |
-| `--sqft_col` | `None` | Explicit CSV column override |
-| `--city_col` | `None` | Optional city column override |
+Training essentials: `--lr_finetune` (`1e-5`), `--num_workers` (2), `--patience` (5), `--finetune_blocks` (4), `--weight_decay` (`1e-4`), `--imbalance_ratio` (1.5), `--seed` (42), `--architecture` (`mobilenet_v2` | `efficientnet_b0`), `--image_size` (224), `--resize_size` (256), `--label_smoothing` (0.05), `--scheduler` (`cosine` | `none`), `--label_config_version` (`v2_log_shrunk` | `v1_legacy`), `--shrinkage_k` (10), `--augmentation` (`improved` | `legacy`), `--device` (`auto` | `cpu` | `cuda`).
 
-Training-only extras: `--lr_finetune` (default `1e-5`, Phase 2), `--num_workers` (2), `--patience` (5, Phase 2 only), `--finetune_blocks` (4), `--weight_decay` (`1e-4`), `--imbalance_ratio` (`1.5`), `--seed` (42).
-Evaluation-only extras: `--checkpoint`, `--num_workers`, `--seed`.
+Evaluation/probe extras: `--checkpoint`, `--num_workers`, `--seed`, `--device`. Probe also has `--feature_source` (`pretrained` | `checkpoint`). Run `python src/train.py --help` for the authoritative list.
 
 ---
 
-## 12. Files
+## 10. Repository layout
 
 ```
-vision_agent/                # repository root (this directory)
+vision_agent/                       # repository root
 ├── src/
 │   ├── __init__.py
-│   ├── model.py             # MobileNetV2 + checkpoint utilities
-│   ├── dataset.py           # columns, proxy labels, splits, transforms, Dataset
-│   ├── train.py             # two-phase training
-│   ├── evaluate.py          # test evaluation and reports
-│   ├── vision_agent.py      # Member B's inference interface
-│   └── inspect_csv.py       # standalone CSV inspection
-├── results/
-├── models/
+│   ├── dataset.py                  # columns, proxy labels, splits, transforms, Dataset
+│   ├── model.py                    # architectures + self-contained checkpoint I/O
+│   ├── plots.py                    # shared headless matplotlib helpers
+│   ├── train.py                    # two-phase training, scheduler, artifacts
+│   ├── evaluate.py                 # test evaluation and reports
+│   ├── probe.py                    # optional frozen-feature linear probe
+│   ├── vision_agent.py             # Member B's inference interface
+│   └── inspect_csv.py              # standalone CSV inspection
+├── docs/                           # guides, model card, reports, audit
 ├── requirements.txt
 ├── README.md
-└── .gitignore
+└── .gitignore                      # generated weights/datasets stay untracked
 ```
+
+Generated weights and datasets are intentionally ignored by Git (see `.gitignore`).

@@ -7,10 +7,16 @@ Single source of truth for:
   * stratified 70/15/15 splitting
   * image transforms and the PyTorch Dataset
 
+Scientific note: labels are MARKET-DERIVED PROXIES. They are tertiles of
+log(price / sqft) relative to a shrunken city median, not human annotations of
+physical condition or aesthetic quality. Versioned label configurations keep
+this methodology from silently changing under an existing checkpoint.
+
 No file in this package is executed here; everything is meant to run on Kaggle.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -44,6 +50,21 @@ LABEL_NAMES = ["low", "average", "high"]
 NUM_CLASSES = 3
 IDX_TO_LABEL = {i: name for i, name in enumerate(LABEL_NAMES)}
 CLASS_TO_IDX = {name: i for i, name in enumerate(LABEL_NAMES)}
+
+# Versioned label methodology. The original baseline used raw price-per-sqft
+# ratios and unshrunk city medians; that behaviour is preserved exactly for
+# checkpoints that carry no version field. The improved default is v2.
+LABEL_V1 = "v1_legacy"
+LABEL_V2 = "v2_log_shrunk"
+DEFAULT_LABEL_CONFIG_VERSION = LABEL_V2
+DEFAULT_SHRINKAGE_K = 10.0  # pseudo-count pulling small cities to the global median
+
+# Versioned preprocessing metadata. Evaluation geometry (resize + center crop
+# + ImageNet normalization) is unchanged; v2 records augmentation explicitly.
+PREPROCESSING_VERSION = "v2"
+AUGMENTATION_LEGACY = "legacy"
+AUGMENTATION_IMPROVED = "improved"
+DEFAULT_AUGMENTATION = AUGMENTATION_IMPROVED
 
 ID_ALIASES = (
     "image_id", "imageid", "id", "img_id", "imgid", "image", "image_name",
@@ -343,7 +364,12 @@ def split_records(
 # ---------------------------------------------------------------------------
 # Proxy labels -- fit on TRAIN only, apply everywhere
 # ---------------------------------------------------------------------------
-def _ratio_for_record(record: Dict[str, Any], stats: Dict[str, Any]) -> float:
+def _ratio_for_record_legacy(record: Dict[str, Any], stats: Dict[str, Any]) -> float:
+    """Baseline v1 proxy value: clipped price-per-sqft / raw city median.
+
+    Kept byte-for-byte so the original checkpoint remains reproducible. Never
+    modify this function to 'improve' labels -- change the v2 path instead.
+    """
     pps = float(record["price_per_sqft"])
     pps = min(max(pps, stats["clip_p1"]), stats["clip_p99"])
 
@@ -356,10 +382,51 @@ def _ratio_for_record(record: Dict[str, Any], stats: Dict[str, Any]) -> float:
     return pps / median
 
 
-def fit_preprocessing_stats(
-    train_records: Sequence[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Fit clipping bounds, medians and tertile thresholds on TRAIN records."""
+def _log_value_for_record(record: Dict[str, Any], stats: Dict[str, Any]) -> float:
+    """v2 proxy value: clipped log(price/sqft) minus shrunken city log median.
+
+    Working in log space makes the quantity a log-ratio (a difference), which
+    tames the right skew of price per square foot. The city denominator is
+    shrunk toward the global training median, so a one-property city cannot
+    define its own reference. All constants come from the saved stats.
+    """
+    pps = float(record["price_per_sqft"])
+    if np.isfinite(pps) and pps > 0:
+        log_pps = math.log(pps)
+    else:
+        # Loader normally rejects these; keep a deterministic fallback rather
+        # than raising during inference on an externally supplied record.
+        log_pps = float(stats["clip_log_p1"])
+    log_pps = min(max(log_pps, stats["clip_log_p1"]), stats["clip_log_p99"])
+
+    city = _city_key(record.get("city"))
+    median = (
+        stats["city_shrunk_log_median"].get(city, stats["global_median_log"])
+        if city else stats["global_median_log"]
+    )
+    if not np.isfinite(median):
+        median = stats["global_median_log"]
+    if not np.isfinite(median):
+        return log_pps  # last-resort fallback; global median is always finite
+    return float(log_pps - median)
+
+
+def _value_for_record(record: Dict[str, Any], stats: Dict[str, Any]) -> float:
+    """Dispatch to the methodology recorded in the checkpoint itself."""
+    version = stats.get("label_config_version", LABEL_V1)
+    if version == LABEL_V2:
+        return _log_value_for_record(record, stats)
+    if version == LABEL_V1:
+        return _ratio_for_record_legacy(record, stats)
+    raise ValueError(
+        f"Unsupported label_config_version {version!r}. This checkpoint was "
+        "produced by a different label methodology; load it with a matching "
+        "version of this package instead of reinterpreting its thresholds."
+    )
+
+
+def _fit_legacy_stats(train_records: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Reproduce the original baseline proxy statistics (no shrinkage, raw pps)."""
     if len(train_records) < 3:
         raise ValueError("Need at least 3 training records to fit proxy-label statistics.")
 
@@ -378,7 +445,7 @@ def fit_preprocessing_stats(
             by_city.setdefault(city, []).append(float(value))
     city_medians = {city: float(np.median(values)) for city, values in by_city.items()}
 
-    ratios = np.array([_ratio_for_record(r, {
+    ratios = np.array([_ratio_for_record_legacy(r, {
         "clip_p1": clip_p1,
         "clip_p99": clip_p99,
         "city_median_pps": city_medians,
@@ -393,14 +460,11 @@ def fit_preprocessing_stats(
             "--max_images or check the price / square-footage columns."
         )
 
-    # Thresholds come from observed distinct values, not interpolated
-    # percentiles. Percentiles can equal the minimum/maximum when values are
-    # tied, which would leave the 'low' or 'high' class empty. With continuous
-    # data these are effectively the same as ordinary tertiles.
     low = float(unique_ratios[len(unique_ratios) // NUM_CLASSES])
     high = float(unique_ratios[(2 * len(unique_ratios)) // NUM_CLASSES])
 
     return {
+        "label_config_version": LABEL_V1,
         "clip_p1": clip_p1,
         "clip_p99": clip_p99,
         "global_median_pps": global_median,
@@ -415,17 +479,144 @@ def fit_preprocessing_stats(
     }
 
 
+def _fit_v2_stats(
+    train_records: Sequence[Dict[str, Any]], shrinkage_k: float
+) -> Dict[str, Any]:
+    """Fit log-ratio tertiles with city medians shrunk toward the global median.
+
+    Everything here is fitted on TRAIN records only. No validation or test row
+    influences clipping bounds, the global median, city medians or thresholds.
+    """
+    if len(train_records) < 3:
+        raise ValueError("Need at least 3 training records to fit proxy-label statistics.")
+    k = float(shrinkage_k)
+    if not np.isfinite(k) or k < 0:
+        raise ValueError(
+            f"--shrinkage_k must be a finite, non-negative number (got {shrinkage_k!r})."
+        )
+
+    pps = np.array([r["price_per_sqft"] for r in train_records], dtype=float)
+    log_pps = np.full(pps.shape, np.nan, dtype=float)
+    valid = np.isfinite(pps) & (pps > 0)
+    log_pps[valid] = np.log(pps[valid])
+    if int(valid.sum()) < 3:
+        raise ValueError(
+            "Fewer than 3 finite, positive price-per-square-foot values were found "
+            "in the training split. Check the price and square-footage columns."
+        )
+
+    values = log_pps[valid]
+    clip_log_p1, clip_log_p99 = (float(v) for v in np.percentile(values, [1, 99]))
+    if clip_log_p1 >= clip_log_p99:
+        clip_log_p1, clip_log_p99 = float(values.min()), float(values.max())
+
+    clipped = np.clip(values, clip_log_p1, clip_log_p99)
+    global_median = float(np.median(clipped))
+
+    by_city: Dict[str, List[float]] = {}
+    for record, value in zip(train_records, clipped):
+        city = _city_key(record.get("city"))
+        if city is not None and np.isfinite(value):
+            by_city.setdefault(city, []).append(float(value))
+    raw_medians = {city: float(np.median(vals)) for city, vals in by_city.items()}
+    city_counts = {city: int(len(vals)) for city, vals in by_city.items()}
+    # Shrinkage: a city with n samples contributes n/n+k of its own median and
+    # k/n+k of the global training median. Tiny cities therefore cannot produce
+    # a degenerate one-sample reference; large cities keep their own statistics.
+    shrunk_medians = {
+        city: (city_counts[city] * median + k * global_median)
+        / (city_counts[city] + k)
+        for city, median in raw_medians.items()
+    }
+
+    stats: Dict[str, Any] = {
+        "label_config_version": LABEL_V2,
+        "value_transform": "log_price_per_sqft",
+        "shrinkage_k": k,
+        "clip_log_p1": clip_log_p1,
+        "clip_log_p99": clip_log_p99,
+        "global_median_log": global_median,
+        "city_raw_log_median": raw_medians,
+        "city_counts": city_counts,
+        "city_shrunk_log_median": shrunk_medians,
+        "label_names": list(LABEL_NAMES),
+        "num_classes": NUM_CLASSES,
+        "ratio_definition": (
+            "clipped_log(price/sqft) - shrunken_city_log_median "
+            "(log-ratio; global training median for missing/unseen cities)"
+        ),
+        "fitted_on": "train split only",
+        "n_train_records": len(train_records),
+    }
+
+    proxy_values = np.array(
+        [_log_value_for_record(r, stats) for r in train_records], dtype=float
+    )
+    proxy_values = proxy_values[np.isfinite(proxy_values)]
+    unique_values = np.unique(proxy_values)
+    if len(unique_values) < NUM_CLASSES:
+        raise ValueError(
+            f"Only {len(unique_values)} distinct log-ratio value(s) in the training "
+            "split; 3 ordered proxy classes cannot be formed. Increase --max_images "
+            "or check the price / square-footage columns; refusing to fit thresholds "
+            "that would produce an empty class."
+        )
+
+    # Observed distinct values (not interpolated percentiles) avoid duplicate
+    # thresholds when many values are tied at the extremes.
+    low = float(unique_values[len(unique_values) // NUM_CLASSES])
+    high = float(unique_values[(2 * len(unique_values)) // NUM_CLASSES])
+    if not (low < high):
+        raise ValueError(
+            "Tertile thresholds collapsed (low >= high); the training log-ratio "
+            "values contain too few distinct values for three ordered classes. "
+            "Increase --max_images or use a larger dataset."
+        )
+    stats["class_threshold_low"] = low
+    stats["class_threshold_high"] = high
+    return stats
+
+
+def fit_preprocessing_stats(
+    train_records: Sequence[Dict[str, Any]],
+    *,
+    label_config_version: str = DEFAULT_LABEL_CONFIG_VERSION,
+    shrinkage_k: float = DEFAULT_SHRINKAGE_K,
+) -> Dict[str, Any]:
+    """Fit clipping bounds, medians and tertile thresholds on TRAIN records.
+
+    ``label_config_version=LABEL_V1`` reproduces the original baseline exactly;
+    the default v2 adds log-ratio values and shrunken city medians. The chosen
+    version is written into the returned stats and therefore into the checkpoint,
+    so evaluation and inference never reinterpret another run's thresholds.
+    """
+    if label_config_version == LABEL_V1:
+        return _fit_legacy_stats(train_records)
+    if label_config_version == LABEL_V2:
+        return _fit_v2_stats(train_records, shrinkage_k)
+    raise ValueError(
+        f"Unsupported label_config_version {label_config_version!r}; "
+        f"choose one of {LABEL_V1!r}, {LABEL_V2!r}."
+    )
+
+
 def compute_labels(
     records: Sequence[Dict[str, Any]], stats: Dict[str, Any], inplace: bool = True
 ) -> List[Dict[str, Any]]:
-    """Attach ``label`` and ``ratio`` to each record using saved statistics."""
+    """Attach ``label`` and ``proxy_value`` using the checkpoint's own methodology.
+
+    ``ratio`` is kept as an alias for backwards compatibility. Under v2 it holds
+    a log-ratio (a difference in log space), not a division -- see
+    ``stats['ratio_definition']``.
+    """
     labeled = list(records) if inplace else [dict(r) for r in records]
     for record in labeled:
-        ratio = _ratio_for_record(record, stats)
-        record["ratio"] = float(ratio)
+        value = _value_for_record(record, stats)
+        record["proxy_value"] = float(value)
+        record["ratio"] = float(value)
         record["label"] = int(
-            0 if ratio < stats["class_threshold_low"]
-            else (1 if ratio < stats["class_threshold_high"] else 2)
+            0 if value < stats["class_threshold_low"]
+            else (1 if value < stats["class_threshold_high"] else 2)
         )
     return labeled
 
@@ -475,13 +666,39 @@ def print_summary(
 # ---------------------------------------------------------------------------
 # Transforms and Dataset
 # ---------------------------------------------------------------------------
-def build_train_transform(image_size: int = IMAGE_SIZE):
-    """Augmentations used only during training."""
+def build_train_transform(
+    image_size: int = IMAGE_SIZE,
+    resize_size: int = RESIZE_SIZE,
+    augmentation: str = DEFAULT_AUGMENTATION,
+):
+    """Augmentations used only during training.
+
+    v1 (legacy) is preserved for controlled experiments with the baseline
+    recipe. The improved default deliberately keeps geometry aligned with
+    evaluation: no rotation (houses are upright), no aggressive random crop
+    (rooflines and facades carry signal), and restrained colour jitter so
+    material cues are not destroyed. Horizontal flip is retained because it is
+    geometry-preserving for the market-derived target.
+    """
+    if augmentation == AUGMENTATION_LEGACY:
+        return transforms.Compose([
+            transforms.RandomResizedCrop(image_size, scale=(0.8, 1.0)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(degrees=10),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+            transforms.ToTensor(),
+            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+        ])
+    if augmentation != AUGMENTATION_IMPROVED:
+        raise ValueError(
+            f"Unknown augmentation {augmentation!r}; choose "
+            f"{AUGMENTATION_IMPROVED!r} or {AUGMENTATION_LEGACY!r}."
+        )
     return transforms.Compose([
-        transforms.RandomResizedCrop(image_size, scale=(0.8, 1.0)),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(degrees=10),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+        transforms.Resize(resize_size),
+        transforms.CenterCrop(image_size),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.05, hue=0.0),
         transforms.ToTensor(),
         transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
     ])
