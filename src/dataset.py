@@ -173,16 +173,6 @@ def _positive_float(value: Any) -> Optional[float]:
     return number
 
 
-def _is_valid_image(path: str) -> bool:
-    """Detect truncated / unreadable image files without raising."""
-    try:
-        with Image.open(path) as image:
-            image.convert("RGB")  # forces pixel decoding, catches corrupted files
-        return True
-    except Exception:
-        return False
-
-
 def _id_sort_key(image_id: str) -> Tuple[int, Any]:
     return (0, int(image_id)) if image_id.isdigit() else (1, image_id)
 
@@ -200,9 +190,10 @@ def load_and_validate_records(
     max_images: Optional[int] = None,
     verbose: bool = True,
 ) -> Tuple[List[Dict[str, Any]], int, Dict[str, Optional[str]]]:
-    """Load the CSV and keep only rows backed by a readable JPEG file.
+    """Load the CSV and keep rows with valid metadata and an existing image file.
 
-    Returns (records, skipped_count, detected_columns).
+    Image contents are decoded lazily in ``HouseImageDataset.__getitem__`` so
+    the initial scan stays fast. Returns (records, skipped_count, detected_columns).
     """
     if not os.path.isfile(csv_path):
         raise FileNotFoundError(f"CSV not found: {csv_path}")
@@ -244,7 +235,7 @@ def load_and_validate_records(
             continue
 
         image_path = os.path.join(images_dir, f"{image_id}.jpg")
-        if not os.path.isfile(image_path) or not _is_valid_image(image_path):
+        if not os.path.isfile(image_path):
             skipped += 1
             continue
 
@@ -524,9 +515,9 @@ class HouseImageDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, index: int):
-        # Images are pre-validated in load_and_validate_records; this bounded
-        # retry is a last-resort guard against a file that was corrupted later.
-        # Each returned pair still uses the label of the image actually read.
+        # Images are only checked for existence during record loading, so decode
+        # here. The bounded retry skips corrupt files; each returned pair keeps
+        # the label of the image that was actually read.
         for offset in range(len(self.samples)):
             path, label = self.samples[(index + offset) % len(self.samples)]
             try:

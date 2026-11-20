@@ -68,7 +68,9 @@ Column names are detected case-insensitively using aliases (e.g. `image_id`/`id`
 --id_col --price_col --sqft_col --city_col
 ```
 
-If a required column is missing, the script prints all available columns and raises a clear error. If several columns plausibly match a role (for example `price` and `price_per_sqft`, or `living_area` and `lot_area`), detection also raises an ambiguity error instead of guessing — pass the exact column with an override. Rows with missing/non-positive price or square footage, duplicate image IDs, missing files, or corrupted images are skipped. Grayscale, RGBA and palette images are converted to RGB.
+If a required column is missing, the script prints all available columns and raises a clear error. If several columns plausibly match a role (for example `price` and `price_per_sqft`, or `living_area` and `lot_area`), detection also raises an ambiguity error instead of guessing — pass the exact column with an override.
+
+**Lazy image validation:** the initial CSV scan only checks that `<image_id>.jpg` exists via `os.path.isfile()`; it does **not** open or decode images. Rows with missing/non-positive price or square footage, duplicate image IDs, or missing files are skipped during this fast scan (~15,000 images). Actual pixel decoding happens lazily in `HouseImageDataset.__getitem__()` while training/evaluation batches are built. If a file is corrupt or becomes unreadable, a bounded retry skips it and uses the next readable image while keeping the label of the image actually loaded. Grayscale, RGBA and palette images are converted to RGB at decode time.
 
 **Always run `inspect_csv.py` first** if detection fails or reports ambiguity, then pass the real column names explicitly.
 
