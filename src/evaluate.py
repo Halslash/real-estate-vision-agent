@@ -334,7 +334,7 @@ def main(argv=None) -> None:
     inference_context = (
         torch.inference_mode() if hasattr(torch, "inference_mode") else torch.no_grad()
     )
-    with inference_context():
+    with inference_context:
         for images, labels in loader:
             images = images.to(device, non_blocking=True)
             logits = model(images)

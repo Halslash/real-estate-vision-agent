@@ -123,12 +123,12 @@ def extract_features(
     context = (
         torch.inference_mode() if hasattr(torch, "inference_mode") else torch.no_grad()
     )
-    with context():
+    with context:
         for images, targets in loader:
             images = images.to(device, non_blocking=True)
             # MobileNetV2/EfficientNet-B0: features -> global average pool -> vector.
             output = model.features(images)
-            pooled = torch.flatten(model.avgpool(output), 1)
+            pooled = torch.flatten(torch.nn.functional.adaptive_avg_pool2d(output, 1), 1)
             features.append(pooled.detach().cpu().numpy())
             labels.extend(targets.tolist())
     if not features:

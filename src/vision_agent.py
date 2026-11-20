@@ -141,10 +141,7 @@ class VisionAgent:
         assert self.model is not None and self.transform is not None
         tensors = [self.transform(self._read_rgb(path)) for path in image_paths]
         batch = torch.stack(tensors).to(self.device)
-        context = (
-            torch.inference_mode() if hasattr(torch, "inference_mode") else torch.no_grad()
-        )
-        with context():
+        with torch.no_grad():
             logits = self.model(batch)
             probabilities = torch.softmax(logits, dim=1).detach().cpu().numpy()
         values = np.asarray(probabilities, dtype=float)
