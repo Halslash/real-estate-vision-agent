@@ -109,3 +109,20 @@ PY
 Export only the selected checkpoint. Include `docs/EXPERIMENT_RESULTS.md` and
 `docs/FINAL_MEMBER_A_REPORT.md` with the submission; leave historical folders
 untouched.
+
+## I. Qualitative demonstration on real images
+
+```python
+!python src/demonstrate.py \
+    --checkpoint /kaggle/working/output/improved_mobilenet/models/best_model.pth \
+    --images_dir /kaggle/input/datasets/nikhilkushwaha2529/real-estate-with-image/Real_estatewith_image/archive-2/socal2/socal_pics \
+    --num_examples 6 --batch_size 64 \
+    --output_dir /kaggle/working/output/demonstration
+```
+
+Writes `demonstration.html` (original image, predicted class, low/average/high
+probabilities, normalized `condition_score`, and confidence explicitly labelled
+as max predicted class probability, **not calibrated**) plus `demonstration.csv`.
+Pass `--image_paths <real image> ...` instead of `--images_dir` to choose specific
+images; use test-split images if the demo must illustrate held-out behaviour.
+This is a qualitative demo, not evaluation evidence.

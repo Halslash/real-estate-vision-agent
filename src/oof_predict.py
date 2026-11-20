@@ -23,6 +23,12 @@ from src.dataset import (  # noqa: E402
     DEFAULT_IMAGES_DIR,
     load_and_validate_records,
 )
+from src.oof_contract import (  # noqa: E402
+    OOF_COLUMNS,
+    check_coverage,
+    check_fold_spec,
+    make_oof_row,
+)
 from src.vision_agent import VisionAgent  # noqa: E402
 
 
@@ -62,32 +68,15 @@ def main(argv=None) -> None:
     for fold in range(n_folds):
         spec_path = os.path.join(args.output_dir, "folds", f"fold_{fold}.json")
         spec = _load_json(spec_path)
-        if int(spec.get("fold", fold)) != fold:
-            raise ValueError(f"Fold spec {spec_path} has an unexpected fold id.")
-        val_ids = set(spec["val"])
-        train_ids = set(spec["train"])
-        if val_ids & train_ids or val_ids & test_ids:
-            raise ValueError(f"Fold {fold} leaks validation/test ids into its training set.")
-        for image_id in val_ids:
-            if ownership.get(image_id) != fold:
-                raise ValueError(f"{image_id} is not owned by fold {fold} in oof_index.json.")
-        for image_id in train_ids:
-            if image_id in ownership and ownership[image_id] == fold:
-                raise ValueError(f"Fold {fold} trains on its own OOF row {image_id}.")
+        val_ids, _ = check_fold_spec(spec, fold, ownership, test_ids)
         checked_ids.update(val_ids)
 
         checkpoint = os.path.join(args.output_dir, f"fold_{fold}", "models", "best_model.pth")
         if not os.path.isfile(checkpoint):
             raise FileNotFoundError(f"Missing fold checkpoint: {checkpoint}")
-        specs.append({"fold": fold, "val_ids": sorted(val_ids), "checkpoint": checkpoint})
+        specs.append({"fold": fold, "val_ids": val_ids, "checkpoint": checkpoint})
 
-    if checked_ids != set(ownership):
-        missing = sorted(set(ownership) - checked_ids)
-        extra = sorted(checked_ids - set(ownership))
-        raise ValueError(
-            f"OOF coverage mismatch: missing={len(missing)} extra={len(extra)}. "
-            "Refusing to emit partial OOF scores."
-        )
+    check_coverage(checked_ids, ownership)
 
     records, skipped, detected = load_and_validate_records(
         csv_path=args.csv_path,
@@ -112,20 +101,9 @@ def main(argv=None) -> None:
         agent = VisionAgent(checkpoint_path=spec["checkpoint"], device=args.device)
         results = agent.score_batch(paths, batch_size=args.batch_size)
         for image_id, result in zip(ids, results):
-            score = float(result["condition_score"])
-            if not 0.0 <= score <= 1.0:
-                raise RuntimeError(f"Invalid OOF score for {image_id}: {score}")
-            rows.append({
-                "image_id": image_id,
-                "fold": fold,
-                "condition_score": score,
-                "label": result["label"],
-                "confidence": float(result["confidence"]),
-                "model": result["model"],
-                "checkpoint": spec["checkpoint"],
-            })
+            rows.append(make_oof_row(image_id, fold, result, spec["checkpoint"]))
 
-    frame = pd.DataFrame(rows).sort_values("image_id").reset_index(drop=True)
+    frame = pd.DataFrame(rows, columns=OOF_COLUMNS).sort_values("image_id").reset_index(drop=True)
     if frame["image_id"].duplicated().any() or len(frame) != len(ownership):
         raise AssertionError("OOF output is incomplete or contains duplicate image_id rows.")
     output_csv = os.path.join(args.output_dir, "oof_visual_scores.csv")

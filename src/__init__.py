@@ -17,6 +17,8 @@ __all__ = [
     "losses",
     "data_audit",
     "make_folds",
+    "oof_contract",
     "oof_predict",
+    "demonstrate",
     "run_experiment",
 ]

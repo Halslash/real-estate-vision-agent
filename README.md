@@ -26,14 +26,16 @@ The score is one soft feature Member B can append to their structural matrix. Al
 | `docs/EXPERIMENT_PLAN.md` | 11 controlled experiments and the mandatory selection rules. |
 | `docs/EXPERIMENT_RESULTS.md` | Comparison table (architecture, labels, loss, F1, duration, checkpoint). |
 | `docs/MODEL_CARD.md` | Intended use, prohibited interpretations, limitations. |
-| `docs/FINAL_MEMBER_A_REPORT.md` | Historical results + final selection report. |
+| `docs/FINAL_MEMBER_A_REPORT.md` | 13-section final report: method, controls, results, demos, limitations. |
+| `docs/FINAL_ACADEMIC_READINESS_AUDIT.md` | Verified vs tested vs implemented-not-run vs remaining limitations. |
 | `docs/IMPLEMENTATION_COMPLETION_REPORT.md` | Static implementation status and verification checklist. |
 | `docs/CNN_PERFORMANCE_AUDIT.md` | Evidence-backed audit: what was wrong and what changed. |
 
 New tooling: `src/run_experiment.py` + `configs/experiments.json` (isolated
 experiments), `src/losses.py` (focal/ordinal/effective-number),
 `src/data_audit.py` (leakage diagnostics), `src/make_folds.py` +
-`src/oof_predict.py` (honest OOF scores for Member B), and `tests/`.
+`src/oof_contract.py` + `src/oof_predict.py` (honest OOF scores for Member B),
+`src/demonstrate.py` (real-image demo), and `tests/`.
 Run locally with `python -m unittest discover -s tests -v`; train only on Kaggle.
 
 ---
@@ -200,7 +202,14 @@ vision_agent/                       # repository root
 │   ├── evaluate.py                 # test evaluation and reports
 │   ├── probe.py                    # optional frozen-feature linear probe
 │   ├── vision_agent.py             # Member B's inference interface
-│   └── inspect_csv.py              # standalone CSV inspection
+│   ├── inspect_csv.py              # standalone CSV inspection
+│   ├── losses.py                   # CE / focal / ordinal / class weighting
+│   ├── data_audit.py               # read-only leakage diagnostics
+│   ├── make_folds.py               # 5 OOF folds from canonical train split
+│   ├── oof_contract.py             # pure OOF isolation + CSV column invariants
+│   ├── oof_predict.py              # honest OOF scores for Member B
+│   ├── run_experiment.py           # config-driven isolated experiments
+│   └── demonstrate.py              # real-image qualitative demonstration
 ├── docs/                           # guides, model card, reports, audit
 ├── requirements.txt
 ├── README.md

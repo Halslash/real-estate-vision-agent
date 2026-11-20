@@ -81,12 +81,15 @@ must be scored only by the final selected checkpoint.
 # writes /kaggle/working/output/oof/oof_visual_scores.csv
 ```
 
-`oof_visual_scores.csv` columns: `image_id`, `fold`, `condition_score`, `label`,
-`confidence`, `model`, `checkpoint`. Every training row appears exactly once and
-is scored only by a model that never trained on it. The scripts fail closed on
-missing checkpoints, overlapping folds, incomplete coverage or any test-id
-leakage. OOF folds are a **different protocol** from the 70/15/15 experiments:
-never mix OOF scores with experiment validation metrics.
+`oof_visual_scores.csv` columns: `image_id`, `fold`, `condition_score`,
+`p_low`, `p_average`, `p_high`, `label`, `confidence`, `model`, `checkpoint`.
+The three `p_*` columns are the full class-probability vector from the scoring
+model; `condition_score = 0.5·p_average + p_high` and `confidence = max(p_*)`.
+Every training row appears exactly once and is scored only by a model that never
+trained on it. The scripts fail closed on missing checkpoints, overlapping
+folds, incomplete coverage or any test-id leakage. OOF folds are a **different
+protocol** from the 70/15/15 experiments: never mix OOF scores with experiment
+validation metrics.
 
 Member B then:
 
