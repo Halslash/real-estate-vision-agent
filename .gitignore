@@ -1,0 +1,23 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Generated artifacts (tracked folders are kept with .gitkeep)
+models/*
+!models/.gitkeep
+results/*
+!results/.gitkeep
+output/
+*.pth
+*.pt
+*.ckpt
+
+# Notebooks / OS clutter
+.ipynb_checkpoints/
+.DS_Store
