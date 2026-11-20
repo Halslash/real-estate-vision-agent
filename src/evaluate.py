@@ -43,6 +43,7 @@ from src.dataset import (  # noqa: E402
     DEFAULT_OUTPUT_DIR,
     LABEL_V1,
     LABEL_V2,
+    LABEL_V3,
     HouseImageDataset,
     build_eval_transform,
     compute_labels,
@@ -267,7 +268,7 @@ def main(argv=None) -> None:
     class_names = [idx_to_label[i] for i in range(len(idx_to_label))]
     train_config = checkpoint.get("train_config", {})
     label_version = stats.get("label_config_version", LABEL_V1)
-    if label_version not in (LABEL_V1, LABEL_V2):
+    if label_version not in (LABEL_V1, LABEL_V2, LABEL_V3):
         raise ValueError(
             f"Unsupported label_config_version {label_version!r} in checkpoint. "
             "Use a package version that understands this label methodology rather "

@@ -48,6 +48,7 @@ from src.dataset import (  # noqa: E402
     IMAGENET_STD,
     LABEL_V1,
     LABEL_V2,
+    LABEL_V3,
     NUM_CLASSES,
     PREPROCESSING_VERSION,
     RESIZE_SIZE,
@@ -93,6 +94,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--images_dir", type=str, default=DEFAULT_IMAGES_DIR)
     parser.add_argument("--csv_path", type=str, default=DEFAULT_CSV_PATH)
     parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--allow_existing", action="store_true",
+                        help="Explicitly permit writing into a directory that already "
+                             "holds a checkpoint. Default: fail closed.")
     parser.add_argument("--epochs", type=int, default=20,
                         help="Total epochs across both phases (split roughly in half).")
     parser.add_argument("--max_images", type=int, default=None,
@@ -129,8 +133,8 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["cosine", "none"],
                         help="Per-phase learning-rate schedule.")
     parser.add_argument("--label_config_version", type=str,
-                        default=DEFAULT_LABEL_CONFIG_VERSION, choices=[LABEL_V1, LABEL_V2],
-                        help="Proxy-label methodology; v2 adds log-ratio + shrunk city medians.")
+                        default=DEFAULT_LABEL_CONFIG_VERSION, choices=[LABEL_V1, LABEL_V2, LABEL_V3],
+                        help="Proxy-label methodology; v3 = v2 with sample-weighted tertiles (opt-in).")
     parser.add_argument("--shrinkage_k", type=float, default=DEFAULT_SHRINKAGE_K,
                         help="Pseudo-count for shrinking city medians to the global median (v2 only).")
     parser.add_argument("--augmentation", type=str, default=DEFAULT_AUGMENTATION,
@@ -272,6 +276,12 @@ def main(argv=None) -> None:
 
     model_dir = os.path.join(args.output_dir, "models")
     results_dir = os.path.join(args.output_dir, "results")
+    existing_checkpoint = os.path.join(model_dir, "best_model.pth")
+    if os.path.exists(existing_checkpoint) and not args.allow_existing:
+        raise FileExistsError(
+            f"Refusing to overwrite existing checkpoint: {existing_checkpoint}. "
+            "Use a new --output_dir (preferred) or pass --allow_existing explicitly."
+        )
     os.makedirs(model_dir, exist_ok=True)
     os.makedirs(results_dir, exist_ok=True)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 import os
 import sys
+import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -80,6 +81,19 @@ class ExperimentConfigTests(unittest.TestCase):
                 poisoned["experiments"][name] = {"description": "should never run"}
                 with self.assertRaises(ValueError):
                     resolve(poisoned, name)
+
+    def test_existing_run_artifact_fails_closed(self) -> None:
+        # Simulate a prior run without touching any real/Kaggle output path.
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "results"))
+            with open(os.path.join(tmp, "results", "metrics.json"), "w") as handle:
+                handle.write("{}")
+            poisoned = dict(self.config)
+            poisoned["experiments"] = {
+                "ghost": {"description": "x", "output_dir": tmp}
+            }
+            with self.assertRaises(FileExistsError):
+                resolve(poisoned, "ghost")
 
     def test_to_flags_skips_none_and_false_and_keeps_underscores(self) -> None:
         flags = to_flags({"seed": 42, "id_col": None, "verbose": False, "do_it": True})

@@ -71,6 +71,14 @@
     "e10_longer_finetune": {
       "description": "Training-configuration ablation: more epochs and unfrozen blocks.",
       "args": {"epochs": 45, "finetune_blocks": 8, "patience": 8}
+    },
+    "e11_v3_quantile_labels": {
+      "description": "LABEL FIX: v3 sample-weighted tertiles. Matched to e0 in every other setting (same split seed 42, same loss/weights/augmentation). Directly tests whether v2's distinct-value cut rule starves a class and depresses macro F1.",
+      "args": {"label_config_version": "v3_balanced_quantile"}
+    },
+    "e12_v3_balanced_ce": {
+      "description": "LABEL FIX + LOSS: v3 sample-weighted tertiles with inverse-frequency CE. Tests whether explicit balancing still helps once the tertile rule itself is balanced.",
+      "args": {"label_config_version": "v3_balanced_quantile", "class_weight": "balanced"}
     }
   }
 }

@@ -28,6 +28,8 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 from torchvision import transforms
 
+from src.label_thresholds import sample_quantile_tertiles
+
 # ---------------------------------------------------------------------------
 # Shared constants (imported by train.py, evaluate.py and vision_agent.py)
 # ---------------------------------------------------------------------------
@@ -53,9 +55,13 @@ CLASS_TO_IDX = {name: i for i, name in enumerate(LABEL_NAMES)}
 
 # Versioned label methodology. The original baseline used raw price-per-sqft
 # ratios and unshrunk city medians; that behaviour is preserved exactly for
-# checkpoints that carry no version field. The improved default is v2.
+# checkpoints that carry no version field. The improved default is v2; v3 is an
+# opt-in experiment that only changes the tertile cut rule.
 LABEL_V1 = "v1_legacy"
 LABEL_V2 = "v2_log_shrunk"
+LABEL_V3 = "v3_balanced_quantile"
+# v3 is an OPT-IN experiment, not a silent default change: historical v2
+# checkpoints must keep being evaluated with their own recorded thresholds.
 DEFAULT_LABEL_CONFIG_VERSION = LABEL_V2
 DEFAULT_SHRINKAGE_K = 10.0  # pseudo-count pulling small cities to the global median
 
@@ -414,7 +420,8 @@ def _log_value_for_record(record: Dict[str, Any], stats: Dict[str, Any]) -> floa
 def _value_for_record(record: Dict[str, Any], stats: Dict[str, Any]) -> float:
     """Dispatch to the methodology recorded in the checkpoint itself."""
     version = stats.get("label_config_version", LABEL_V1)
-    if version == LABEL_V2:
+    if version in (LABEL_V2, LABEL_V3):
+        # v3 changes only WHERE the tertile cuts fall, not the proxy value itself.
         return _log_value_for_record(record, stats)
     if version == LABEL_V1:
         return _ratio_for_record_legacy(record, stats)
@@ -577,6 +584,31 @@ def _fit_v2_stats(
     return stats
 
 
+def _fit_v3_stats(
+    train_records: Sequence[Dict[str, Any]], shrinkage_k: float
+) -> Dict[str, Any]:
+    """v3 keeps v2's proxy values and medians but cuts at SAMPLE tertiles.
+
+    v2 cuts at the 1/3 and 2/3 positions of the *distinct* sorted values, so a
+    heavily repeated proxy value counts once and can starve the outer classes.
+    v3 uses sample-weighted quantiles; tied values still share one label, so
+    residual imbalance is possible and is reported in the experiment docs.
+
+    Built on top of the untouched v2 fitter so that v2 statistics stay frozen.
+    """
+    stats = _fit_v2_stats(train_records, shrinkage_k)
+    proxy_values = np.array(
+        [_log_value_for_record(r, stats) for r in train_records], dtype=float
+    )
+    proxy_values = proxy_values[np.isfinite(proxy_values)]
+    low, high = sample_quantile_tertiles(proxy_values)
+    stats["label_config_version"] = LABEL_V3
+    stats["class_threshold_low"] = low
+    stats["class_threshold_high"] = high
+    stats["threshold_rule"] = "sample_weighted_quantiles"
+    return stats
+
+
 def fit_preprocessing_stats(
     train_records: Sequence[Dict[str, Any]],
     *,
@@ -586,17 +618,20 @@ def fit_preprocessing_stats(
     """Fit clipping bounds, medians and tertile thresholds on TRAIN records.
 
     ``label_config_version=LABEL_V1`` reproduces the original baseline exactly;
-    the default v2 adds log-ratio values and shrunken city medians. The chosen
-    version is written into the returned stats and therefore into the checkpoint,
-    so evaluation and inference never reinterpret another run's thresholds.
+    v2 adds log-ratio values and shrunken city medians; v3 is v2 with balanced
+    sample tertiles (opt-in experiment). The default stays v2 so existing
+    checkpoints are never reinterpreted. The chosen version is written into the
+    returned stats and therefore into the checkpoint.
     """
     if label_config_version == LABEL_V1:
         return _fit_legacy_stats(train_records)
     if label_config_version == LABEL_V2:
         return _fit_v2_stats(train_records, shrinkage_k)
+    if label_config_version == LABEL_V3:
+        return _fit_v3_stats(train_records, shrinkage_k)
     raise ValueError(
         f"Unsupported label_config_version {label_config_version!r}; "
-        f"choose one of {LABEL_V1!r}, {LABEL_V2!r}."
+        f"choose one of {LABEL_V1!r}, {LABEL_V2!r}, {LABEL_V3!r}."
     )
 
 

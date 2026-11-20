@@ -78,7 +78,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="'pretrained' tests ImageNet features from the "
                              "checkpoint's architecture; 'checkpoint' uses the "
                              "trained backbone.")
+    parser.add_argument("--force", action="store_true",
+                        help="Allow overwriting an existing probe result file.")
     return parser
+
+
+def _probe_output_path(args) -> str:
+    """Distinct filename per feature source; the default keeps its legacy name."""
+    filename = ("probe_results.json" if args.feature_source == "pretrained"
+                else f"probe_results_{args.feature_source}.json")
+    return os.path.join(args.output_dir, "results", filename)
 
 
 def _locate_checkpoint(args) -> str:
@@ -140,6 +149,13 @@ def main(argv=None) -> None:
     args = build_parser().parse_args(argv)
     set_seed(args.seed)
     device = resolve_device(args.device)
+
+    probe_output = _probe_output_path(args)
+    if os.path.exists(probe_output) and not args.force:
+        raise FileExistsError(
+            f"Refusing to overwrite existing probe result: {probe_output}. "
+            "Use a new --output_dir or pass --force."
+        )
 
     checkpoint_path = _locate_checkpoint(args)
     checkpoint = load_checkpoint(checkpoint_path, map_location="cpu")
@@ -234,13 +250,12 @@ def main(argv=None) -> None:
 
     results_dir = os.path.join(args.output_dir, "results")
     os.makedirs(results_dir, exist_ok=True)
-    output_path = os.path.join(results_dir, "probe_results.json")
-    with open(output_path, "w", encoding="utf-8") as handle:
+    with open(probe_output, "w", encoding="utf-8") as handle:
         json.dump(results, handle, indent=2, ensure_ascii=False)
 
     print(f"Probe validation accuracy: {results['accuracy']:.4f}")
     print(f"Probe validation macro F1: {results['macro_f1']:.4f}")
-    print(f"Probe results saved in: {output_path}")
+    print(f"Probe results saved in: {probe_output}")
 
 
 if __name__ == "__main__":

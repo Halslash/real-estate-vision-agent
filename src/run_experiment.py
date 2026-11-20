@@ -16,6 +16,14 @@ from typing import Any, Dict, List
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROTECTED_NAMES = {"baseline", "improved_mobilenet", "models", "results", "output"}
+# Any of these in an output dir means a run already happened there: fail closed.
+RUN_ARTIFACTS = (
+    "models/best_model.pth",
+    "experiment_run.json",
+    "results/metrics.json",
+    "results/probe_results.json",
+    "results/probe_results_checkpoint.json",
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--probe", action="store_true", help="Also run probe.py (train->val only).")
     parser.add_argument("--force", action="store_true",
                         help="Allow reusing a checkpoint directory (never for protected names).")
+    parser.add_argument("--check", action="store_true",
+                        help="Preflight only: verify the output dir is clean, print the "
+                             "resolved config and commands, then exit without training.")
     return parser
 
 
@@ -59,10 +70,15 @@ def resolve(config: Dict[str, Any], name: str) -> Dict[str, Any]:
     if os.path.abspath(output_dir) == os.path.abspath("/kaggle/working/output"):
         raise ValueError("Refusing to write directly to /kaggle/working/output.")
     checkpoint = os.path.join(output_dir, "models", "best_model.pth")
-    if os.path.isfile(checkpoint) and not config["experiments"][name].get("allow_resume", False) and not FORCE[0]:
-        raise FileExistsError(
-            f"Checkpoint already exists: {checkpoint}. Use a new --name or --force."
-        )
+    if not config["experiments"][name].get("allow_resume", False) and not FORCE[0]:
+        existing = [os.path.join(output_dir, rel) for rel in RUN_ARTIFACTS
+                    if os.path.exists(os.path.join(output_dir, rel))]
+        if existing:
+            raise FileExistsError(
+                "Output directory already contains prior run artifacts: "
+                + ", ".join(existing)
+                + ". Use a new --name / output_dir, or --force to override deliberately."
+            )
     return {"args": merged, "output_dir": output_dir, "checkpoint": checkpoint,
             "description": config["experiments"][name].get("description", "")}
 
@@ -149,16 +165,18 @@ def main(argv=None) -> None:
         "commands": [" ".join(command) for _, command in commands],
         "started_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
+    no_execute = args.dry_run or args.check
     print(f"Experiment: {args.name} -> {spec['output_dir']}")
     for step, command in commands:
         print(f"[{step}] " + " ".join(command))
     for step, command in commands:
-        if args.dry_run:
+        if no_execute:
             continue
         subprocess.run(command, cwd=REPO_ROOT, check=True)
 
-    if args.dry_run:
-        print("Dry run: no commands executed and no files written.")
+    if no_execute:
+        print("Preflight OK: output dir clean. No commands executed and no files written."
+              if args.check else "Dry run: no commands executed and no files written.")
         return
     log["finished_at"] = datetime.datetime.now().isoformat(timespec="seconds")
     os.makedirs(spec["output_dir"], exist_ok=True)
