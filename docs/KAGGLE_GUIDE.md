@@ -93,7 +93,10 @@ invalid paths and output validity):
 !python src/oof_predict.py --output_dir /kaggle/working/output/oof
 ```
 
-See `docs/MEMBER_B_INTEGRATION.md` for the full contract.
+The commands above are the **legacy row-level fold path**. They are unsafe for
+Member B: the final e0 checkpoint may have trained on outer-test rows. Use
+group-aware folds restricted to outer-train data and fold-specific CNNs instead.
+See `docs/MEMBER_A_TECHNICAL_HANDOFF.md` for the full contract.
 
 ## H. Checkpoint export
 

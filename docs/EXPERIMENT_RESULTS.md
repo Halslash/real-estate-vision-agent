@@ -31,9 +31,14 @@ from a `--max_images` smoke test.
 | `e8_legacy_augmentation` | MobileNetV2 | `v2_log_shrunk`, K=10 | 224 | CE, auto | legacy | 30 ep, bs 64, seed 42 | PENDING | PENDING | `.../e8_legacy_augmentation/models/best_model.pth` |
 | `e9_shrinkage_k1` | MobileNetV2 | `v2_log_shrunk`, **K=1** | 224 | CE, auto | improved | 30 ep, bs 64, seed 42 | PENDING | PENDING | `.../e9_shrinkage_k1/models/best_model.pth` |
 | `e10_longer_finetune` | MobileNetV2 | `v2_log_shrunk`, K=10 | 224 | CE, auto | improved | 45 ep, 8 blocks, pat 8, seed 42 | PENDING | PENDING | `.../e10_longer_finetune/models/best_model.pth` |
+| `e11_v3_quantile_labels` | MobileNetV2 | `v3_balanced_quantile` | 224 | CE, auto, ls 0.05 | improved | 30 ep, bs 64, seed 42, matched to `e0` | PENDING | PENDING | **no checkpoint exists** |
+| `e12_v3_balanced_ce` | MobileNetV2 | `v3_balanced_quantile` | 224 | CE, balanced, ls 0.05 | improved | 30 ep, bs 64, seed 42 | PENDING | PENDING | **no checkpoint exists** |
 
 `...` = `/kaggle/working/output/experiments`. `PENDING` means **not run** — only
-the final `e0_reference_group_split` row has live Kaggle results. Peak GPU memory
+the final `e0_reference_group_split` row has live Kaggle results. e11/e12 are
+configured in `configs/experiments.json` and locally dry-run checked, but no
+Kaggle run, validation metric or checkpoint exists for either; they cannot be
+selected or compared. Peak GPU memory
 (717.5 MB) and resolved device (CUDA) are in its `training_summary.json`.
 
 ## 2. Final model — `e0_reference_group_split` (property-disjoint split)

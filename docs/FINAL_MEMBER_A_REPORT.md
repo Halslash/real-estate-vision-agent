@@ -7,7 +7,8 @@ test Macro F1 `0.4240`). The one-time gate and sealed metrics exist. The leakage
 audit was completed by the property-disjoint split design and its PASS preflight.
 Historical random-split results in §7 are preserved verbatim, were not
 re-measured, and are **not comparable** with the final run. The live demonstration
-was not run.
+was not run. The concise examiner-facing summary is `docs/ACADEMIC_REPORT.md`;
+the pending end-to-end pipeline is `docs/FULL_VALUATION_IMPLEMENTATION_PLAN.md`.
 
 > **Interpretation warning.** Every target is a **market-derived visual proxy**
 > (a tertile of prices per square foot relative to a shrunken city median),
@@ -181,7 +182,8 @@ configuration, MobileNetV2, `v2_log_shrunk` (K=10), 224/256, CE + auto class
 weights β=0.9999, label smoothing 0.05, improved augmentation, seed 42, 30
 epochs, cosine schedule, early stopping not triggered. Best epoch **27**,
 validation Macro F1 **0.4314855**. Duration 1446.1 s, peak VRAM 717.5 MB, device
-CUDA. Other `e1`–`e10` experiments were **not run**.
+CUDA. Other `e1`–`e12` experiments were **not run**; e11/e12 are configured only,
+with no checkpoints or validation results.
 
 One-time test evaluation, **2,308** untouched samples:
 
@@ -309,7 +311,7 @@ evaluation must not be rerun.
 | No human condition labels, calibration or uncertainty | Inherent | Not a direct price estimator; `confidence` is max class probability, **not** calibrated |
 | Sealed test split | Final | Evaluated once; never reuse for model selection or tuning |
 | Single-split results; no significance testing | Limitations | Macro F1 with per-class support reported; historical vs final protocols not comparable |
-| `e1`–`e10` experiments, OOF CNN runs, live demo | **Not run** | No result claimed; Member B owns any future OOF/outer-workflow runs |
+| `e1`–`e12` experiments, OOF CNN runs, live demo | **Not run** | No result claimed; e11/e12 have configs only; Member B owns any future OOF/outer-workflow runs |
 | Regression head, validation-tuned thresholds, group-aware folds | Deferred | Would change the 3-class API or need new evidence first |
 
 **Bottom line:** Member A is finalized at pinned commit

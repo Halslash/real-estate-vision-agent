@@ -109,7 +109,8 @@ run for the final model.
 
 ## Reproduction
 
-See `docs/MEMBER_A_KAGGLE_READINESS.md` for the exact pinned preflight, training
-and one-time evaluation cells, and `docs/MEMBER_A_TECHNICAL_HANDOFF.md` for the
+See `docs/ACADEMIC_REPORT.md` for the examiner-facing summary,
+`docs/MEMBER_A_KAGGLE_READINESS.md` for the exact pinned preflight, training and
+one-time evaluation cells, and `docs/MEMBER_A_TECHNICAL_HANDOFF.md` for the
 interface contract. Training occurs only on Kaggle GPU; no local training, no
 GitHub push, no modification of historical checkpoints or sealed metrics.
