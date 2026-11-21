@@ -25,7 +25,7 @@ Legend (required by the brief):
 | Controlled experiments e11/e12 | **Implemented + Locally tested** | `configs/experiments.json`; `--list` and `--dry-run` verified. |
 | Experiment protocol + guarded Kaggle cells | **Implemented** | `docs/MEMBER_A_EXPERIMENT_PLAN.md` §4b (fail-closed guard cell, audit cells, preflight). |
 | Fail-closed overwrite protection | **Implemented + Locally tested** | `run_experiment.py --check`/artifact guard, `train.py --allow_existing`, `probe.py --force`, `label_audit.py --force`; historical names refused. |
-| Leakage audit on real data | **Ready for Kaggle** | `src/data_audit.py` exists but has never been run on the mounted dataset. |
+| Leakage audit on real data | **Executed (local reconstruction of the public Kaggle dataset)** | Seed-42 split regenerated with the project's own `load_and_validate_records`/`make_stratified_split` (15,474 records; 10,831/2,321/2,322; v2/v3 train counts match the label audit), then `src/data_audit.py` ran on all records: 0 missing images, **1,384 exact-duplicate groups across splits**, **1,391 near-duplicate pairs**, **1,399 street groups** and **356 city groups** spanning splits. Held-out estimates are optimistic; see §7. |
 | Frozen-probe ceiling re-test | **Ready for Kaggle** | commands in plan §2/§4. |
 | Any CNN training / validation result | **Ready for Kaggle** (not validated) | no artifact exists locally or in git history. |
 | One-time test evaluation of winner | **Ready for Kaggle** (not validated) | gated on selection; plan §5. |
@@ -143,6 +143,14 @@ If an artifact is missing, write `MISSING`, not an estimate.
 
 ## 7. Risks the operator must know
 
+- **Material split leakage is now measured, not hypothetical.** On the reconstructed
+  seed-42 split, 614 validation rows (26.5%) and 643 test rows (27.7%) are
+  byte-identical to a training image; 1,384 exact-duplicate groups, 1,391 near-duplicate
+  pairs and 1,399 street groups span splits. Validation and test estimates are therefore
+  optimistic. The near-duplicate search only compares images on the same street, and city
+  overlap is descriptive (expected under random splitting), so this is not an exhaustive
+  leakage proof. Audit provenance: public Kaggle dataset downloaded and split locally,
+  verified against the label audit's record counts and v2/v3 train class counts.
 - The brief's `e0_reference` numbers (`0.4563`, accuracy `~0.4606`, epoch `28`)
   have **no supporting artifact** in this repo; `0.4521`/epoch 15 is the documented
   incumbent. Treat the former as unverified.

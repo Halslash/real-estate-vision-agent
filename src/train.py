@@ -19,7 +19,7 @@ import os
 import random
 import sys
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 
 import numpy as np
 import pandas as pd
@@ -183,6 +183,38 @@ def resolve_device(requested: str) -> torch.device:
     return torch.device(requested)
 
 
+def validate_supplied_split(
+    split: Dict[str, List[str]], records: Sequence[Dict[str, Any]]
+) -> None:
+    """Fail closed on a --split_file that leaks, duplicates or drops rows.
+
+    OOF files intentionally leave ``test`` empty and cover only the canonical
+    training rows, so the coverage check applies only to full 70/15/15 splits.
+    """
+    for name in ("train", "val", "test"):
+        if len(split[name]) != len(set(split[name])):
+            raise ValueError(f"--split_file '{name}' contains duplicate ids.")
+    sets = {name: set(split[name]) for name in ("train", "val", "test")}
+    if sets["train"] & sets["val"] or sets["train"] & sets["test"] or sets["val"] & sets["test"]:
+        raise ValueError(
+            "--split_file train/val/test ids overlap; refusing to train with a leaking split."
+        )
+    known = {r["image_id"] for r in records}
+    unknown = (sets["train"] | sets["val"] | sets["test"]) - known
+    if unknown:
+        raise ValueError(
+            f"--split_file contains ids absent from CSV/images "
+            f"(e.g. {sorted(unknown)[:5]}). Check --csv_path/--images_dir."
+        )
+    if split["test"]:
+        missing = known - (sets["train"] | sets["val"] | sets["test"])
+        if missing:
+            raise ValueError(
+                f"--split_file omits {len(missing)} valid records "
+                f"(e.g. {sorted(missing)[:5]}); refusing to silently drop rows."
+            )
+
+
 def make_lr_scheduler(optimizer, name: str, total_epochs: int):
     """One scheduler per phase, stepped once per epoch.
 
@@ -309,14 +341,7 @@ def main(argv=None) -> None:
                 raise ValueError(f"--split_file is missing a '{name}' id list.")
         if not split["train"] or not split["val"]:
             raise ValueError("--split_file must have non-empty train and val lists.")
-        known = {r["image_id"] for r in records}
-        for name in ("train", "val", "test"):
-            unknown = set(split[name]) - known
-            if unknown:
-                raise ValueError(
-                    f"--split_file '{name}' contains ids absent from CSV/images "
-                    f"(e.g. {sorted(unknown)[:5]}). Check --csv_path/--images_dir."
-                )
+        validate_supplied_split(split, records)
         print(f"Reusing split from {args.split_file} "
               f"(train={len(split['train'])}, val={len(split['val'])}, "
               f"test={len(split['test'])})")
