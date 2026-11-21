@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -17,6 +18,7 @@ from src.group_split import (  # noqa: E402
     MISSING_ADDRESS_TOKENS,
     build_groups,
     make_group_split,
+    missing_address_ids,
     normalize_address,
 )
 
@@ -42,6 +44,32 @@ def _groups(count: int):
     return {f"g{i // 2:03d}": [str(i), str(i + 1)] for i in range(0, count, 2)}
 
 
+def _image_fixture(tmp: str):
+    """1/2 share an address, 1/3 share exact bytes, 1/4 are near-duplicates."""
+    def save(name: str, pattern: str, color: int = 255) -> None:
+        image = Image.new("L", (64, 64), color)
+        for x in range(64):
+            for y in range(64):
+                if pattern == "vertical" and x % 8 < 4:
+                    image.putpixel((x, y), 0)
+                elif pattern == "horizontal" and y % 8 < 4:
+                    image.putpixel((x, y), 0)
+        image.convert("RGB").save(os.path.join(tmp, f"{name}.jpg"))
+
+    save("1", "vertical")
+    save("2", "horizontal")            # same address as 1, different image
+    save("3", "vertical")              # different address, identical bytes to 1
+    save("4", "vertical", color=254)   # different address, near-duplicate of 1
+    noise = Image.fromarray(np.random.default_rng(0).integers(0, 256, (64, 64), dtype=np.uint8))
+    noise.convert("RGB").save(os.path.join(tmp, "5.jpg"))
+
+    records = [{"image_id": str(i)} for i in range(1, 6)]
+    streets = {"1": "1317 Van Buren Ave", "2": "1317 VAN BUREN AVENUE",
+               "3": "9 Other Street", "4": "42 Different Road",
+               "5": "99 Unrelated Lane"}
+    return records, streets
+
+
 class AddressTests(unittest.TestCase):
     def test_normalizes_case_punctuation_and_abbreviations(self) -> None:
         expected = "1317 van buren avenue"
@@ -54,38 +82,37 @@ class AddressTests(unittest.TestCase):
         self.assertIsNone(normalize_address(None))
         self.assertIsNone(normalize_address(float("nan")))
 
+    def test_missing_addresses_are_reported_explicitly(self) -> None:
+        streets = {"1": "1317 Van Buren Ave", "2": "Address not provided",
+                   "3": "", "4": float("nan")}
+        self.assertEqual(
+            missing_address_ids(streets, ["1", "2", "3", "4"]), ["2", "3", "4"]
+        )
+
 
 class BuildGroupsTests(unittest.TestCase):
-    def test_links_same_address_exact_bytes_and_near_duplicates(self) -> None:
+    def test_links_same_address_and_exact_bytes_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            def save(name: str, pattern: str, color: int = 255) -> None:
-                image = Image.new("L", (64, 64), color)
-                for x in range(64):
-                    for y in range(64):
-                        if pattern == "vertical" and x % 8 < 4:
-                            image.putpixel((x, y), 0)
-                        elif pattern == "horizontal" and y % 8 < 4:
-                            image.putpixel((x, y), 0)
-                image.convert("RGB").save(os.path.join(tmp, f"{name}.jpg"))
-
-            save("1", "vertical")
-            save("2", "horizontal")            # same address as 1, different image
-            save("3", "vertical")              # different address, identical bytes to 1
-            save("4", "vertical", color=254)   # different address, near-duplicate of 1
-            # Distinct noise pattern: dHash far from both stripe patterns.
-            noise = Image.fromarray(np.random.default_rng(0).integers(0, 256, (64, 64), dtype=np.uint8))
-            noise.convert("RGB").save(os.path.join(tmp, "5.jpg"))
-
-            records = [{"image_id": str(i)} for i in range(1, 6)]
-            streets = {"1": "1317 Van Buren Ave", "2": "1317 VAN BUREN AVENUE",
-                       "3": "9 Other Street", "4": "42 Different Road",
-                       "5": "99 Unrelated Lane"}
-            groups = build_groups(records, streets, tmp, hash_bits=5, verbose=False)
+            records, streets = _image_fixture(tmp)
+            groups = build_groups(records, streets, tmp, verbose=False)
             owner = {image_id: group for group, members in groups.items() for image_id in members}
             self.assertEqual(owner["1"], owner["2"], "same address must stay together")
             self.assertEqual(owner["1"], owner["3"], "exact image bytes must stay together")
-            self.assertEqual(owner["1"], owner["4"], "near-duplicates must stay together")
+            self.assertNotEqual(owner["1"], owner["4"], "dHash is off by default")
             self.assertNotEqual(owner["1"], owner["5"], "unrelated images must stay separate")
+
+    def test_near_duplicates_are_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records, streets = _image_fixture(tmp)
+            groups = build_groups(records, streets, tmp, near_duplicates=True, verbose=False)
+            owner = {image_id: group for group, members in groups.items() for image_id in members}
+            self.assertEqual(owner["1"], owner["4"], "opt-in dHash must link near-duplicates")
+
+    def test_default_workflow_does_not_invoke_dhash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            records, streets = _image_fixture(tmp)
+            with patch("src.group_split._dhash", side_effect=AssertionError("dHash must stay off")):
+                build_groups(records, streets, tmp, verbose=False)
 
     def test_missing_image_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -109,6 +136,28 @@ class SplitTests(unittest.TestCase):
         owner = {image_id: name for name, ids in split.items() for image_id in ids}
         for members in groups.values():
             self.assertEqual(len({owner[image_id] for image_id in members}), 1)
+
+    def test_addresses_and_exact_images_never_cross_splits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            n = 40
+            records = _records(n)
+            streets = {str(i): f"{1000 + i} Test Street" for i in range(n)}
+            streets["1"] = streets["0"]  # same address, different bytes
+            for i in range(n):
+                color = (i % 20) * 10   # ids i and i+20 share exact image bytes
+                Image.new("RGB", (16, 16), (color, color, color)).save(
+                    os.path.join(tmp, f"{i}.jpg")
+                )
+            groups = build_groups(records, streets, tmp, verbose=False)
+            split = make_group_split(records, groups, seed=42, verbose=False)
+
+            owner = {image_id: name for name, ids in split.items() for image_id in ids}
+            self.assertEqual(len(owner), n, "every valid record appears exactly once")
+            self.assertEqual(set(owner), {str(i) for i in range(n)})
+            self.assertEqual(owner["0"], owner["1"], "same address must not cross splits")
+            for i in range(20):
+                self.assertEqual(owner[str(i)], owner[str(i + 20)],
+                                 "exact duplicate image must not cross splits")
 
     def test_reproducible_and_seed_sensitive(self) -> None:
         records, groups = _records(60), _groups(60)

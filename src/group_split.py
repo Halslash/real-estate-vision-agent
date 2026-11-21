@@ -3,12 +3,15 @@
 This module NEVER trains and NEVER edits records, labels or the default split.
 It only emits a ``split_indices.json`` that ``train.py --split_file`` can reuse.
 
-Groups are connected components over three kinds of evidence:
+By default, groups are connected components over two cheap evidence types:
   1. the same normalized full street ADDRESS (the CSV ``street`` field is a full
      address, e.g. ``1317 Van Buren Avenue``, not just a street name);
-  2. byte-identical image files (SHA-256);
-  3. near-duplicate images (64-bit dHash, Hamming distance <= --hash_bits),
-     searched globally rather than only within one street string.
+  2. byte-identical image files (SHA-256).
+
+``--near_duplicates`` additionally links visually similar images with 64-bit
+dHash (Hamming <= --hash_bits) using a global all-pairs comparison. It is OFF by
+default because that comparison is the Kaggle bottleneck; it is an optional
+audit experiment, not a prerequisite for a defensible split.
 
 Splitting happens at GROUP level with the same temporary price-per-sqft tertile
 stratification and the same two-step 70/30 -> 50/50 recipe as
@@ -46,7 +49,7 @@ DEFAULT_IMAGES = (
 DEFAULT_OUTPUT_DIR = "/kaggle/working/output/leakage_resistant_split"
 
 # These denote an unusable address, not a shared property. Such rows start as
-# singletons; duplicate images still get grouped by the hash/near-duplicate edges.
+# singletons; byte-identical images still get grouped by the exact-hash edge.
 MISSING_ADDRESS_TOKENS = {"", "address not provided", "not provided", "unknown", "nan", "none", "null", "na"}
 ABBREVIATIONS = {
     "st": "street", "ave": "avenue", "av": "avenue", "blvd": "boulevard",
@@ -65,8 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--street_col", default="street",
                         help="Column holding the full street address.")
+    parser.add_argument("--near_duplicates", action="store_true",
+                        help="Optional global dHash linking (slow). Off by default.")
     parser.add_argument("--hash_bits", type=int, default=5,
-                        help="dHash Hamming-distance threshold for near-duplicates.")
+                        help="dHash threshold; used only with --near_duplicates.")
     parser.add_argument("--allow_existing", action="store_true",
                         help="Explicitly allow replacing an existing generated split.")
     return parser
@@ -80,6 +85,11 @@ def normalize_address(value: Any) -> Optional[str]:
     if text in MISSING_ADDRESS_TOKENS:
         return None
     return " ".join(ABBREVIATIONS.get(token, token) for token in text.split()) or None
+
+
+def missing_address_ids(streets: Mapping[str, Any], ids: Sequence[str]) -> List[str]:
+    """Ids with an absent/placeholder address; reported, never merged as one property."""
+    return [image_id for image_id in ids if normalize_address(streets.get(image_id)) is None]
 
 
 def _id_sort_key(value: Any) -> Tuple[int, Any]:
@@ -143,9 +153,15 @@ def build_groups(
     streets: Mapping[str, Any],
     images_dir: str,
     hash_bits: int = 5,
+    *,
+    near_duplicates: bool = False,
     verbose: bool = True,
 ) -> Dict[str, List[str]]:
-    """Return group_id -> sorted member image ids (one group never crosses splits)."""
+    """Return group_id -> sorted member image ids (one group never crosses splits).
+
+    Address and exact-SHA-256 edges are always used. Global dHash edges are
+    computed only when ``near_duplicates`` is explicitly enabled.
+    """
     ids = [str(record["image_id"]) for record in records]
     if not ids:
         raise ValueError("No valid records; cannot build groups.")
@@ -162,20 +178,23 @@ def build_groups(
             address_edges += union.union(members[0], other)
 
     exact_hashes: Dict[str, List[str]] = defaultdict(list)
-    dhashes: Dict[str, Optional[int]] = {}
     for image_id in ids:
         path = os.path.join(images_dir, f"{image_id}.jpg")
         if not os.path.isfile(path):
             raise FileNotFoundError(f"Image for grouped id {image_id} not found: {path}")
         exact_hashes[_sha256_file(path)].append(image_id)
-        dhashes[image_id] = _dhash(path)
     exact_edges = sum(
         union.union(members[0], other)
         for members in exact_hashes.values() for other in members[1:]
     )
 
-    near_pairs = _near_duplicate_pairs(dhashes, int(hash_bits))
-    near_edges = sum(union.union(a, b) for a, b in near_pairs)
+    near_edges = 0
+    if near_duplicates:
+        dhashes: Dict[str, Optional[int]] = {
+            image_id: _dhash(os.path.join(images_dir, f"{image_id}.jpg")) for image_id in ids
+        }
+        near_pairs = _near_duplicate_pairs(dhashes, int(hash_bits))
+        near_edges = sum(union.union(a, b) for a, b in near_pairs)
 
     components: Dict[str, List[str]] = defaultdict(list)
     for image_id in ids:
@@ -187,7 +206,8 @@ def build_groups(
     if verbose:
         sizes = Counter(len(members) for members in groups.values())
         print(f"Groups: {len(groups)} (address edges={address_edges}, "
-              f"exact-hash edges={exact_edges}, near-dup edges={near_edges})")
+              f"exact-hash edges={exact_edges}, "
+              f"near-dup edges={near_edges} [{'on' if near_duplicates else 'off'}])")
         print(f"Group-size distribution: {dict(sorted(sizes.items()))} | "
               f"largest={max(sizes) if sizes else 0}")
     return groups
@@ -293,14 +313,21 @@ def main(argv=None) -> None:
         for _, row in frame.iterrows()
     }
 
-    groups = build_groups(records, streets, args.images_dir, args.hash_bits)
+    groups = build_groups(
+        records, streets, args.images_dir, args.hash_bits,
+        near_duplicates=args.near_duplicates,
+    )
     split = make_group_split(records, groups, args.seed)
+    missing = missing_address_ids(streets, [str(r["image_id"]) for r in records])
 
     os.makedirs(args.output_dir, exist_ok=True)
     manifest = {
-        "strategy": "property_address_plus_exact_hash_plus_global_dhash",
+        "strategy": ("property_address_plus_exact_hash_plus_global_dhash"
+                     if args.near_duplicates else "property_address_plus_exact_hash"),
         "seed": args.seed,
-        "hash_bits": args.hash_bits,
+        "near_duplicates": bool(args.near_duplicates),
+        "hash_bits": args.hash_bits if args.near_duplicates else None,
+        "missing_address_ids": missing,
         "skipped_records": skipped,
         "detected_columns": detected,
         "n_groups": len(groups),
@@ -313,6 +340,7 @@ def main(argv=None) -> None:
     with open(manifest_path, "w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2)
     print(f"Skipped records: {skipped}")
+    print(f"Missing/placeholder addresses: {len(missing)} (examples: {missing[:5]})")
     print(f"Wrote {split_path} and {manifest_path}")
 
 
