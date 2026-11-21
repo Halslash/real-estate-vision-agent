@@ -2,8 +2,9 @@
 
 **Primary distribution: the checkpoint is included directly in this Git
 repository.** Cloning is sufficient; no GitHub Release, Kaggle access, or extra
-download is required. The GitHub Release described below is an **additional
-optional** distribution route and has not been published yet.
+download is required. The same checkpoint is **also published** as a GitHub
+Release asset — an **additional optional** distribution route, not the only way
+to obtain the model. The two copies were verified byte-identical.
 
 ## Tracked checkpoint
 
@@ -30,14 +31,15 @@ Verified checkpoint identity (local readback): `arch=mobilenet_v2`,
 `label_config_version=v2_log_shrunk`, `epochs=30`, `seed=42`, `best_epoch=27`,
 `val_macro_f1=0.4314855288867976`; `VisionAgent` loads it and scores images.
 
-## Optional GitHub Release (prepared, not published)
+## Optional GitHub Release (published and verified)
 
 | Field | Value |
 |---|---|
 | Tag | `v1.0.0-member-a-cnn` |
 | Asset filename | `member_a_cnn_e0_reference_group_split_best.pth` |
-| Intended download URL (will 404 until published) | `https://github.com/Halslash/real-estate-vision-agent/releases/download/v1.0.0-member-a-cnn/member_a_cnn_e0_reference_group_split_best.pth` |
-| Expected SHA-256 of the asset | `9ffd1952fca3f18627d5070a3f3d7eeb8781f101a245d9675efa285d98d7cd4b` |
+| Download URL (verified, HTTP 200) | `https://github.com/Halslash/real-estate-vision-agent/releases/download/v1.0.0-member-a-cnn/member_a_cnn_e0_reference_group_split_best.pth` |
+| Asset size | **9,171,467 bytes** (matches the tracked checkpoint) |
+| SHA-256 of published asset | `9ffd1952fca3f18627d5070a3f3d7eeb8781f101a245d9675efa285d98d7cd4b` (downloaded and compared — identical to the repository copy) |
 
 ### Release notes
 
@@ -49,25 +51,18 @@ market-derived visual proxy, not verified condition and not a price; confidence
 is not calibrated; do not use this checkpoint to score Member B outer-test rows
 that overlap its training data.
 
-### Publish steps (require the repository owner's GitHub credentials)
+### Verify the published asset
 
-From the repository root, upload the already-tracked file as a release asset:
-
-```bash
-gh auth login
-gh release create v1.0.0-member-a-cnn \
-  checkpoints/member_a_cnn_e0_reference_group_split_best.pth \
-  --title "Member A final CNN — e0_reference_group_split" \
-  --notes-file docs/MODEL_RELEASE_NOTES.md
-```
-
-Verify the published asset (optional):
+The release and its asset already exist; download and compare against the
+repository copy (the asset is *not* needed to use the model, since cloning
+already provides the weights):
 
 ```bash
-curl -fL -o /tmp/opencode/member_a_checkpoint.pth \
+curl -fL --retry 3 -o /tmp/opencode/member_a_checkpoint.pth \
   https://github.com/Halslash/real-estate-vision-agent/releases/download/v1.0.0-member-a-cnn/member_a_cnn_e0_reference_group_split_best.pth
 sha256sum /tmp/opencode/member_a_checkpoint.pth
-# expected: 9ffd1952fca3f18627d5070a3f3d7eeb8781f101a245d9675efa285d98d7cd4b
+sha256sum checkpoints/member_a_cnn_e0_reference_group_split_best.pth
+# both: 9ffd1952fca3f18627d5070a3f3d7eeb8781f101a245d9675efa285d98d7cd4b
 ```
 
 ## Inference from the repository copy

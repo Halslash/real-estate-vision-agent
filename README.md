@@ -89,12 +89,15 @@ sha256sum checkpoints/member_a_cnn_e0_reference_group_split_best.pth
 git ls-files --error-unmatch checkpoints/member_a_cnn_e0_reference_group_split_best.pth
 ```
 
-A GitHub Release is an **additional, optional** distribution route, not the only
-way to obtain the model: tag `v1.0.0-member-a-cnn`, asset
+The same checkpoint is **also published as a GitHub Release asset** — an
+**additional, optional** distribution route, not the only way to obtain the
+model: tag `v1.0.0-member-a-cnn`, asset
 `member_a_cnn_e0_reference_group_split_best.pth`, URL
-`https://github.com/Halslash/real-estate-vision-agent/releases/download/v1.0.0-member-a-cnn/member_a_cnn_e0_reference_group_split_best.pth`
-(prepared but not yet published). See `docs/MODEL_RELEASE.md` for release notes,
-publishing and download verification.
+`https://github.com/Halslash/real-estate-vision-agent/releases/download/v1.0.0-member-a-cnn/member_a_cnn_e0_reference_group_split_best.pth`.
+The downloaded asset is 9,171,467 bytes with SHA-256
+`9ffd1952fca3f18627d5070a3f3d7eeb8781f101a245d9675efa285d98d7cd4b` — identical
+to the repository copy. See `docs/MODEL_RELEASE.md` for release notes and
+verification commands.
 
 ## Inference example
 
