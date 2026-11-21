@@ -1,10 +1,13 @@
 # Final Member A report — CNN visual proxy
 
-**Status:** implementation, experiment harness, OOF tooling and demonstration
-tooling are complete and locally checked. All **new** Kaggle GPU runs, the
-one-time test evaluation of the winner, the leakage audit and the live demo are
-`PENDING`. Historical results below are preserved verbatim and were not
-re-measured.
+**Status: FINAL — Member A is complete.** The pinned `e0_reference_group_split`
+CNN trained on Kaggle (best epoch 27, validation Macro F1 `0.4314855`) and its
+untouched property-disjoint test split was evaluated **once** (2,308 samples,
+test Macro F1 `0.4240`). The one-time gate and sealed metrics exist. The leakage
+audit was completed by the property-disjoint split design and its PASS preflight.
+Historical random-split results in §7 are preserved verbatim, were not
+re-measured, and are **not comparable** with the final run. The live demonstration
+was not run.
 
 > **Interpretation warning.** Every target is a **market-derived visual proxy**
 > (a tertile of prices per square foot relative to a shrunken city median),
@@ -22,11 +25,14 @@ The scope is strictly Member A — no Random Forest, no Linear Regression and no
 final price prediction are implemented here.
 
 The deliverables are (a) a self-contained checkpoint and stable `VisionAgent`
-API, (b) a controlled experiment harness and audit trail, (c) out-of-fold (OOF)
-scores so Member B never trains on in-sample visual features, and (d) this
-report. The incumbent checkpoint remains
-`/kaggle/working/output/improved_mobilenet/models/best_model.pth` until a new run
-wins on validation Macro F1 and receives its single test evaluation.
+API, (b) a controlled experiment harness and audit trail, (c) OOF utilities and a
+row contract so Member B never trains on in-sample visual features, and (d) this
+report. The **final checkpoint** is
+`/kaggle/working/output/experiments/e0_reference_group_split/models/best_model.pth`.
+The historical incumbent
+`/kaggle/working/output/improved_mobilenet/models/best_model.pth` is preserved as
+a random-split reference artifact, not as the final model. The complete interface
+and leakage handoff is `docs/MEMBER_A_TECHNICAL_HANDOFF.md`.
 
 ## 2. Scientific problem and target definition
 
@@ -58,11 +64,14 @@ flowchart LR
     D -. temporary price-per-sqft bins, not labels .-> D
 ```
 
-The split is stratified on temporary price-per-sqft quantiles purely for
-balance; those bins are not training labels. Duplicate handling is currently by
-normalized image-id stem only. Whether near-duplicate photos or same-street
-listings cross splits is an **open empirical question** answered by
-`src/data_audit.py` on Kaggle (`PENDING`) — see §9 and §13.
+The **final** run replaced the random split with a property-disjoint split
+(normalized full street address + exact image SHA-256, seed 42): train 10,829 /
+val 2,337 / test 2,308. Its PASS preflight verified that no usable address and
+no exact-hash group crosses splits; near-duplicate dHash grouping was disabled,
+so perceptually similar photos at different addresses remain untested. Temporary
+price-per-sqft quantiles are used only for split balance, never as labels.
+Historical runs used a 70/15/15 random split with duplicate image ids removed —
+see §7, §9 and §13.
 
 ## 4. Model and training procedure
 
@@ -125,6 +134,11 @@ flowchart TD
     E --> F
 ```
 
+This is the **original historical design rule** (the 0.4521 bar was the random-
+split incumbent). It was not executed as drawn: only `e0_reference_group_split`
+was run, on a property-disjoint split, and its one-time result is in §8. The two
+protocols are not comparable.
+
 `e9` is not mixed into the loss comparison because it changes the label
 definition. The frozen-feature logistic probe (`src/probe.py`) is a separate
 diagnostic protocol, never reported as a CNN result.
@@ -140,7 +154,12 @@ seeded uniform random). The test split is never used for early stopping,
 statistics fitting or threshold tuning, and evaluation runs **once** for the
 selected winner.
 
-## 7. Historical measured results (preserved verbatim)
+## 7. Historical measured results — random split (preserved verbatim)
+
+These runs used the old **random 70/15/15 split**, whose test rows share street
+addresses and byte-identical images with training. They are preserved for
+context but are **not directly comparable** with the final property-disjoint
+result in §8: the final test set has no address or exact-hash group overlap.
 
 | Run | Split | Accuracy | Macro F1 | Notes |
 |---|---|---:|---:|---|
@@ -155,36 +174,52 @@ a feature/label ceiling rather than a classifier-head bottleneck — a
 **hypothesis**, not a proven fact, which is why the experiment plan emphasizes
 labels, losses and leakage over head tuning.
 
-## 8. New experiment results (`PENDING`)
+## 8. Final run — `e0_reference_group_split` (property-disjoint split)
 
-No new GPU run has been executed locally. Live metrics belong in
-`docs/EXPERIMENT_RESULTS.md` and must come from `training_summary.json`,
-`results/metrics.json` and checkpoint metadata. No number may be copied between
-rows, estimated, or taken from a `--max_images` smoke test.
+Pinned commit `bc39d102d2e9cde83144966d6e6c910926109429`, `e0_reference`
+configuration, MobileNetV2, `v2_log_shrunk` (K=10), 224/256, CE + auto class
+weights β=0.9999, label smoothing 0.05, improved augmentation, seed 42, 30
+epochs, cosine schedule, early stopping not triggered. Best epoch **27**,
+validation Macro F1 **0.4314855**. Duration 1446.1 s, peak VRAM 717.5 MB, device
+CUDA. Other `e1`–`e10` experiments were **not run**.
 
-| Run | Best val Macro F1 | Val per-class F1 (low/avg/high) | Training duration | Peak VRAM | One-time test F1 |
-|---|---:|---|---|---|---|
-| `e0` … `e10` | PENDING | PENDING | PENDING | PENDING | PENDING (winner only) |
+One-time test evaluation, **2,308** untouched samples:
 
-**Selection rule:** validation Macro F1 with per-class support reported; ties
-broken by per-class F1 and support. If nothing convincingly beats **0.4521**,
-the incumbent stays in production.
+| Accuracy | Macro precision | Macro recall | Macro F1 | Weighted F1 |
+|---:|---:|---:|---:|---:|
+| 0.4281 | 0.4277 | 0.4296 | 0.4240 | 0.4233 |
+
+Per-class test F1: low **0.4582**, average **0.3539**, high **0.4600**.
+Average-class recall **0.3070** (weak). Full per-class precision/recall/support,
+confusion matrices, distributions and baselines are in `results/metrics.json` and
+`results/classification_report.json` under
+`/kaggle/working/output/experiments/e0_reference_group_split/`.
+
+**Selection outcome:** the final validation F1 (0.4314855) is below the
+historical random-split incumbent's 0.4521 (§7), but the two protocols are not
+comparable because the historical test set was leakage-contaminated. The
+property-disjoint run is the authoritative final model. Its test split was
+evaluated once and sealed in `results/evaluation_gate.json`; it must **never** be
+reused for selection or tuning.
 
 ## 9. Integrity checks: leakage audit and OOF
 
 Two distinct risks are handled separately.
 
-1. **Data leakage.** `src/data_audit.py` is a read-only diagnostic for
-   CSV→image matching failures, exact-byte and perceptual duplicates, and
-   street/city groups spanning splits. Status: `PENDING` on Kaggle. If material
-   leakage is found, held-out numbers are optimistic and must be reported as
-   such — not silently fixed after seeing results.
-2. **In-sample Member B features.** Five OOF folds are built from the
-   **canonical training split only**; the test split is never folded. Each fold
-   is trained via `train.py --split_file`, so label statistics are refitted on
-   that fold's train rows only. Each held-out row is scored by the checkpoint
-   that did **not** train on it, and the scripts fail closed on overlapping
-   folds, test-id leakage or incomplete coverage.
+1. **Data leakage — addressed for the final run.** The preflight for the final
+   split returned **PASS** with `status=PASS`, `every_valid_id_exactly_once=true`,
+   `no_address_crosses_splits=true`, `no_exact_sha_group_crosses_splits=true`,
+   15,474 valid records, zero missing images, and zero duplicate groups crossing
+   splits. Grouping used the normalized full street address plus exact SHA-256;
+   near-duplicate dHash was disabled, so perceptual duplicates on different
+   addresses remain untested. This is why the final test metrics replace the
+   historical random-split numbers.
+2. **In-sample Member B features — tooling only, not run.** `train.py
+   --split_file` refits label statistics on the supplied train ids only, and
+   `oof_contract.py` fails closed on overlapping folds, test-id leakage or
+   incomplete coverage. No OOF CNN has been trained in this finalization. Future
+   group-aware fold requirements and the outer-test warning are in
+   `docs/MEMBER_A_TECHNICAL_HANDOFF.md`.
 
 ```mermaid
 flowchart LR
@@ -199,10 +234,13 @@ flowchart LR
 ```
 
 Local unit tests in `tests/test_oof_contract.py` verify the isolation rules and
-CSV columns without torch.
+CSV columns without torch. The diagram above is the **legacy row-level `KFold`
+path** (`src/make_folds.py`); future Member B folds must be group-aware — see
+`docs/MEMBER_A_TECHNICAL_HANDOFF.md`.
 
 ## 10. Member B hand-off
 
+The complete handoff is `docs/MEMBER_A_TECHNICAL_HANDOFF.md`. Summary:
 `VisionAgent` exposes `VisionAgent(device="cuda")`, `.load(path)`, `.score(path)`
 and `.score_batch(paths, batch_size=64)`, with output fields `condition_score`,
 `label`, `probabilities`, `confidence`, `model`, `score_type`. It handles RGB,
@@ -218,19 +256,13 @@ grayscale and RGBA inputs and never fabricates fallback scores.
 | `confidence` | Max class probability (not calibrated) |
 | `model`, `checkpoint` | Provenance of the scoring model |
 
-```mermaid
-sequenceDiagram
-    participant A as Member A (OOF)
-    participant B as Member B
-    A->>B: oof_visual_scores.csv (training rows only)
-    Note over B: Train structural model on OOF visual feature
-    A->>B: final checkpoint via VisionAgent
-    Note over B: Score validation/test rows only
-```
-
-Member B trains on the OOF scores and uses the selected final checkpoint only
-for its held-out rows. OOF scores and experiment validation metrics are
-different protocols and must never be mixed.
+**Explicit warning:** do **not** use the final `e0_reference_group_split`
+checkpoint to score Member B's outer-test rows if those rows overlap its
+training data. Its train ids are a random row subset of the full dataset, so an
+outer-test group will generally be represented. Member B must train its own
+fold-specific CNNs on the appropriate outer-training data only, then score its
+outer test with a CNN that never saw those rows. OOF scores and experiment
+validation metrics are different protocols and must never be mixed.
 
 ## 11. Reproducible live demonstration
 
@@ -247,19 +279,13 @@ requires the Kaggle checkpoint and dataset. Exact command: section I of
 
 Seed 42 is fixed for Python, NumPy, PyTorch and CUDA, with deterministic cuDNN.
 Configs, exact commands, durations and peak GPU memory are recorded per run.
-Copy-paste commands live in `docs/KAGGLE_GUIDE.md`; the minimal sequence is:
-
-```python
-!python -m unittest discover -s tests -v
-!python src/run_experiment.py --list
-!python src/run_experiment.py --name e0_reference --dry-run
-!python src/run_experiment.py --name e0_reference   # repeat for e1..e10
-!python src/data_audit.py --split_file /kaggle/working/output/experiments/e0_reference/models/split_indices.json
-!python src/evaluate.py --output_dir /kaggle/working/output/experiments/<winner>  # ONCE
-!python src/make_folds.py --n_folds 5 --seed 42 --output_dir /kaggle/working/output/oof
-!python src/oof_predict.py --output_dir /kaggle/working/output/oof
-!python src/demonstrate.py --checkpoint <winner>/models/best_model.pth --images_dir <dataset> --output_dir /kaggle/working/output/demonstration
-```
+The **final** run used the exact pinned cells in
+`docs/MEMBER_A_KAGGLE_READINESS.md`: preflight, the training cell with
+`--split_file /kaggle/working/output/leakage_resistant_split/split_indices.json`
+and `--output_dir /kaggle/working/output/experiments/e0_reference_group_split`,
+then the one-time evaluation cell. The legacy experiment-harness commands remain
+in `docs/KAGGLE_GUIDE.md` but were not used for the final model. The test
+evaluation must not be rerun.
 
 | Artifact | Content |
 |---|---|
@@ -267,22 +293,27 @@ Copy-paste commands live in `docs/KAGGLE_GUIDE.md`; the minimal sequence is:
 | `models/training_summary.json` | Best epoch/F1, duration, peak VRAM, device, early stopping |
 | `models/split_indices.json` | Exact train/val/test image IDs |
 | `results/metrics.json`, `evaluation_report.md` | Headline, per-class and confusion-matrix metrics |
-| `oof/oof_visual_scores.csv` | One honest out-of-fold score per training row |
-| `demonstration/demonstration.html` | Real-image visual demonstration |
+| `results/evaluation_gate.json` | One-time seal: pin, checkpoint/split/report/metrics hashes and all test metrics |
+| `training_gate.json` | Pre-training provenance: pin, split and preflight hashes, selection metric |
+| `oof/oof_visual_scores.csv` | Legacy utility output — **not generated** in this finalization |
+| `demonstration/demonstration.html` | Real-image visual demonstration — **not generated** |
 
 ## 13. Limitations, threats to validity and future work
 
 | Threat / limitation | Status | Mitigation or honest residual |
 |---|---|---|
-| Proxy labels (price-per-sqft tertiles) confounded by location, demand, timing | Inherent | Reported as a proxy, never as condition or price |
-| Weak `average` class (test F1 0.3293) | Measured | Likely heterogeneous middle tertile; targeted experiments `e1`–`e5`, `e9` |
-| Near-duplicate / same-street leakage | **Unmeasured (`PENDING`)** | `data_audit.py` reports it; held-out scores stay provisional until run |
-| No human condition labels, calibration or uncertainty | Inherent | No calibrated condition claim; `confidence` is max probability only |
-| Single-split results; no significance testing | Limitations | Macro F1 with per-class support reported; differences must be convincing |
-| New experiments, winner test evaluation, OOF scores, demo | **Not executed locally** | Must be run on Kaggle; no result is claimed here |
-| Regression head, validation-tuned thresholds, group-aware folds | Deferred | Would change the 3-class API or need leakage evidence first |
+| Proxy labels (price-per-sqft tertiles) confounded by location, demand, timing | Inherent | Reported as a market-derived proxy, never as physical condition or price |
+| Weak `average` class (final test F1 0.3539, recall 0.3070) | Measured | Heterogeneous middle tertile; do not read it as a "medium condition" verdict |
+| Exact-duplicate / same-street leakage | **Addressed for final run** | Property-disjoint split; PASS preflight with zero address/hash groups crossing splits |
+| Near-duplicate perceptual images | Unmeasured | dHash grouping disabled; similar photos at different addresses remain untested |
+| No human condition labels, calibration or uncertainty | Inherent | Not a direct price estimator; `confidence` is max class probability, **not** calibrated |
+| Sealed test split | Final | Evaluated once; never reuse for model selection or tuning |
+| Single-split results; no significance testing | Limitations | Macro F1 with per-class support reported; historical vs final protocols not comparable |
+| `e1`–`e10` experiments, OOF CNN runs, live demo | **Not run** | No result claimed; Member B owns any future OOF/outer-workflow runs |
+| Regression head, validation-tuned thresholds, group-aware folds | Deferred | Would change the 3-class API or need new evidence first |
 
-**Bottom line:** the methodology and tooling are in place and locally verified;
-no performance improvement is claimed beyond the preserved historical numbers.
-The incumbent checkpoint stays the default until Kaggle evidence justifies a
-change.
+**Bottom line:** Member A is finalized at pinned commit
+`bc39d102d2e9cde83144966d6e6c910926109429` with a property-disjoint CNN. Its
+authoritative result is validation Macro F1 **0.4314855** and one-time test Macro
+F1 **0.4240** on 2,308 samples. The historical random-split numbers are preserved
+but not comparable. No further test evaluation is permitted.
