@@ -72,36 +72,36 @@ cd real-estate-vision-agent
 pip install -r requirements.txt
 ```
 
-## Checkpoint download (release not yet published)
+## Checkpoint included in the repository
 
-The final weights are excluded from Git (`.gitignore` has `*.pth`). A GitHub
-Release is **prepared but not published**; the checkpoint is currently available
-only at the Kaggle path
-`/kaggle/working/output/experiments/e0_reference_group_split/models/best_model.pth`.
-Its size and SHA-256 cannot be verified locally. Release notes and exact publish
-steps are in `docs/MODEL_RELEASE.md`.
+**Cloning the repository is sufficient to obtain the weights.** The selected
+final checkpoint is tracked directly at
+`checkpoints/member_a_cnn_e0_reference_group_split_best.pth` (**9,171,467 bytes**,
+SHA-256 `9ffd1952fca3f18627d5070a3f3d7eeb8781f101a245d9675efa285d98d7cd4b`).
+The global `*.pth` exclusion in `.gitignore` is unchanged; this single checkpoint
+was explicitly added and is tracked by Git.
 
-Intended asset (URL below will 404 until the release is created):
-
-- Tag: `v1.0.0-member-a-cnn`
-- Asset: `member_a_cnn_e0_reference_group_split_best.pth`
-- URL: `https://github.com/Halslash/real-estate-vision-agent/releases/download/v1.0.0-member-a-cnn/member_a_cnn_e0_reference_group_split_best.pth`
-- SHA-256: **placeholder — measure with `sha256sum` on the Kaggle file before publishing**
-
-After publication:
+Verify after cloning:
 
 ```bash
-curl -fL -o member_a_cnn_e0_reference_group_split_best.pth \
-  https://github.com/Halslash/real-estate-vision-agent/releases/download/v1.0.0-member-a-cnn/member_a_cnn_e0_reference_group_split_best.pth
-sha256sum member_a_cnn_e0_reference_group_split_best.pth   # compare with the published SHA-256
+sha256sum checkpoints/member_a_cnn_e0_reference_group_split_best.pth
+# expected: 9ffd1952fca3f18627d5070a3f3d7eeb8781f101a245d9675efa285d98d7cd4b
+git ls-files --error-unmatch checkpoints/member_a_cnn_e0_reference_group_split_best.pth
 ```
+
+A GitHub Release is an **additional, optional** distribution route, not the only
+way to obtain the model: tag `v1.0.0-member-a-cnn`, asset
+`member_a_cnn_e0_reference_group_split_best.pth`, URL
+`https://github.com/Halslash/real-estate-vision-agent/releases/download/v1.0.0-member-a-cnn/member_a_cnn_e0_reference_group_split_best.pth`
+(prepared but not yet published). See `docs/MODEL_RELEASE.md` for release notes,
+publishing and download verification.
 
 ## Inference example
 
 ```python
 from src.vision_agent import VisionAgent
 
-agent = VisionAgent(checkpoint_path="member_a_cnn_e0_reference_group_split_best.pth")
+agent = VisionAgent(checkpoint_path="checkpoints/member_a_cnn_e0_reference_group_split_best.pth")
 result = agent.score("example_house.jpg")          # agent.score_batch(paths, batch_size=64)
 print(result)
 ```
@@ -140,7 +140,7 @@ sealed metrics are excluded from Git by design.
 | `docs/FINAL_MEMBER_A_REPORT.md` | Detailed 13-section technical report. |
 | `docs/MEMBER_A_TECHNICAL_HANDOFF.md` | `VisionAgent`, probability vector, OOF row contract and leakage rules. |
 | `docs/FULL_VALUATION_IMPLEMENTATION_PLAN.md` | Pending end-to-end architecture; distinguishes proxy from price prediction. |
-| `docs/MODEL_RELEASE.md` | Release preparation, notes, download and verification commands. |
+| `docs/MODEL_RELEASE.md` | Tracked-checkpoint details, SHA-256 verification, optional release notes and commands. |
 | `docs/MEMBER_A_KAGGLE_READINESS.md` | Pinned preflight / training / one-time evaluation cells. |
 | `docs/KAGGLE_GUIDE.md`, `docs/MEMBER_A_LEAKAGE_RESISTANT_SPLIT.md` | Supporting commands and split rationale. |
 | `docs/archive/` | Superseded audit/status snapshots kept for provenance. |
