@@ -48,7 +48,7 @@ def compute_class_weights(
     if values.ndim != 1 or values.size < 2 or not np.isfinite(values).all():
         raise ValueError(f"Invalid class counts: {counts!r}")
     if (values <= 0).any():
-        raise ValueError(f"Every class needs at least one training sample: {counts.tolist()}")
+        raise ValueError(f"Every class needs at least one training sample: {values.tolist()}")
 
     num_classes = values.size
     if mode == CLASS_WEIGHT_NONE:
